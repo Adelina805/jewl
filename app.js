@@ -47,7 +47,7 @@
   let drag = null;
 
   const HINTS = {
-    draw: "Draw silver around the glass. Switch to Move to reposition anything.",
+    draw: "Draw silver around the glass. Let strokes touch or overlap and they melt into one mass. Switch to Move to reposition anything.",
     move: "Drag any silver stroke or the glass. Drag the handle to rotate the glass. Delete or ⌫ removes a selected stroke.",
   };
 
@@ -100,6 +100,7 @@
       selectedId = null;
     }
     syncChrome();
+    markMetalDirty();
     render();
   }
 
@@ -107,6 +108,7 @@
     if (activeStroke) {
       activeStroke = null;
       drag = null;
+      markMetalDirty();
       render();
       return;
     }
@@ -137,6 +139,7 @@
     canvas.style.width = `${width}px`;
     canvas.style.height = `${height}px`;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    markMetalDirty();
 
     // Re-center until the user moves the glass, so full-window resizes stay balanced
     if (!glass.placed || !glass.userMoved) {
@@ -305,243 +308,436 @@
     ctx.fillRect(0, 0, width, height);
   }
 
-  function strokePolyline(points) {
+  function strokePolyline(points, c = ctx) {
     if (points.length < 2) return;
-    ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
+    c.beginPath();
+    c.moveTo(points[0].x, points[0].y);
     for (let i = 1; i < points.length; i++) {
       const prev = points[i - 1];
       const curr = points[i];
       const midX = (prev.x + curr.x) / 2;
       const midY = (prev.y + curr.y) / 2;
-      ctx.quadraticCurveTo(prev.x, prev.y, midX, midY);
+      c.quadraticCurveTo(prev.x, prev.y, midX, midY);
     }
     const last = points[points.length - 1];
-    ctx.lineTo(last.x, last.y);
-    ctx.stroke();
+    c.lineTo(last.x, last.y);
+    c.stroke();
   }
 
-  function resample(points, spacing) {
-    if (points.length < 2) return points.slice();
-    const out = [points[0]];
-    let prev = points[0];
-    let budget = 0;
-    for (let i = 1; i < points.length; i++) {
-      let curr = points[i];
-      let seg = dist(prev, curr);
-      if (seg < 1e-4) continue;
-      while (budget + seg >= spacing) {
-        const t = (spacing - budget) / seg;
-        const nx = prev.x + (curr.x - prev.x) * t;
-        const ny = prev.y + (curr.y - prev.y) * t;
-        const p = { x: nx, y: ny };
-        out.push(p);
-        prev = p;
-        seg = dist(prev, curr);
-        budget = 0;
-      }
-      budget += seg;
-      prev = curr;
+  // ---------------------------------------------------------------------------
+  // Liquid silver
+  //
+  // Strokes are not drawn as separate tubes. Instead every stroke is rasterised
+  // into a soft "metaball" field, the fields are summed, and the result is
+  // thresholded — so strokes that touch or come close fuse into one pool, with
+  // rounded fillets in the crotches, like molten solder.
+  //
+  // That merged silhouette is then turned into a height map (rounded edge +
+  // gentle dome), normals are taken from it, and each pixel reflects a small
+  // procedural studio environment — which is what gives the chrome look.
+  // ---------------------------------------------------------------------------
+
+  const SILVER = {
+    goo: 0.55, // blur radius relative to stroke weight — higher = stickier, more melting
+    threshold: 0.42, // field level where the metal surface sits
+    liveArea: 260000, // max working pixels while drawing / dragging
+    fullArea: 1700000, // max working pixels for the settled render
+  };
+
+  const metal = {
+    canvas: document.createElement("canvas"),
+    version: 0,
+    builtVersion: -1,
+    builtQuality: "",
+    empty: true,
+    x: 0,
+    y: 0,
+    w: 0,
+    h: 0,
+  };
+  const metalCtx = metal.canvas.getContext("2d");
+  const maskCanvas = document.createElement("canvas");
+  const maskCtx = maskCanvas.getContext("2d", { willReadFrequently: true });
+
+  const bufPool = {};
+  function buf(name, n, Type = Float32Array) {
+    let b = bufPool[name];
+    if (!b || b.length < n) {
+      b = new Type(n);
+      bufPool[name] = b;
     }
-    const last = points[points.length - 1];
-    if (dist(out[out.length - 1], last) > 0.5) out.push(last);
-    return out;
+    return b;
   }
 
-  // Key light from upper-left (coastal workbench + reference photos)
-  const LIGHT = { x: -0.52, y: -0.78 };
-
-  function clampByte(n) {
-    return Math.max(0, Math.min(255, n | 0));
+  function markMetalDirty() {
+    metal.version++;
   }
 
-  function rgbCss(r, g, b, a = 1) {
-    return `rgba(${clampByte(r)}, ${clampByte(g)}, ${clampByte(b)}, ${a})`;
+  function smoothstep(a, b, x) {
+    const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+    return t * t * (3 - 2 * t);
   }
 
-  /** Cap / single-point stamp — same material language as stroke layers */
-  function drawSterlingDot(p, radius, facing = 0.75, ping = 0.55) {
-    const glint = Math.pow(facing, 1.35);
-    const hx = p.x + LIGHT.x * radius * 0.45;
-    const hy = p.y + LIGHT.y * radius * 0.45;
-
-    const grad = ctx.createRadialGradient(hx, hy, radius * 0.02, p.x, p.y, radius);
-    grad.addColorStop(0, rgbCss(255, 255, 255));
-    grad.addColorStop(0.18, rgbCss(220 + glint * 20, 228 + glint * 16, 236 + glint * 10));
-    grad.addColorStop(0.45, rgbCss(150 + facing * 20, 160 + facing * 18, 174 + facing * 12));
-    grad.addColorStop(0.7, rgbCss(54, 60, 70));
-    grad.addColorStop(0.88, rgbCss(140 + glint * 20, 148 + glint * 16, 160 + glint * 12));
-    grad.addColorStop(1, rgbCss(210 + glint * 20, 216 + glint * 16, 224 + glint * 10));
-
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
-    ctx.fillStyle = grad;
-    ctx.fill();
-
-    if (ping > 0.2) {
-      const sx = p.x + LIGHT.x * radius * 0.5;
-      const sy = p.y + LIGHT.y * radius * 0.5;
-      const spec = ctx.createRadialGradient(sx, sy, 0, sx, sy, radius * 0.28);
-      spec.addColorStop(0, `rgba(255,255,255,${0.7 + ping * 0.3})`);
-      spec.addColorStop(1, "rgba(255,255,255,0)");
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
-      ctx.fillStyle = spec;
-      ctx.fill();
+  /** One sliding-window box blur pass along a single axis. */
+  function blur1d(src, dst, count, len, step, lineStep, r) {
+    const inv = 1 / (2 * r + 1);
+    for (let l = 0; l < count; l++) {
+      const base = l * lineStep;
+      let acc = 0;
+      const lim = Math.min(r, len - 1);
+      for (let i = 0; i <= lim; i++) acc += src[base + i * step];
+      for (let i = 0; i < len; i++) {
+        dst[base + i * step] = acc * inv;
+        const add = i + r + 1;
+        if (add < len) acc += src[base + add * step];
+        const sub = i - r;
+        if (sub >= 0) acc -= src[base + sub * step];
+      }
     }
   }
 
-  function offsetPolyline(frames, ox, oy, alongN = 0) {
-    return frames.map(({ p, nx, ny }) => ({
-      x: p.x + ox + nx * alongN,
-      y: p.y + oy + ny * alongN,
-    }));
+  /** Gaussian-ish blur (three box passes each way), in place. */
+  function gaussBlur(a, tmp, w, h, sigma) {
+    if (sigma < 0.5) return;
+    const r = Math.max(1, Math.round((Math.sqrt(4 * sigma * sigma + 1) - 1) / 2));
+    for (let k = 0; k < 3; k++) {
+      blur1d(a, tmp, h, w, 1, w, r);
+      blur1d(tmp, a, w, h, w, 1, r);
+    }
   }
 
-  function buildFrames(samples) {
-    return samples.map((p, i) => {
-      const prev = samples[Math.max(0, i - 1)];
-      const next = samples[Math.min(samples.length - 1, i + 1)];
-      let tx = next.x - prev.x;
-      let ty = next.y - prev.y;
-      const len = Math.hypot(tx, ty) || 1;
-      tx /= len;
-      ty /= len;
-      const nx = -ty;
-      const ny = tx;
-      const facing = Math.max(0, Math.min(1, (-nx * LIGHT.x - ny * LIGHT.y) * 0.5 + 0.55));
-      const side = Math.abs(tx * LIGHT.x + ty * LIGHT.y);
-      const ping = Math.pow(1 - side, 2.2) * (0.35 + facing * 0.65);
-      return { p, tx, ty, nx, ny, facing, ping };
-    });
-  }
-
-  function drawMetallicStroke(stroke, opts = {}) {
-    const points = stroke.points;
-    const w = stroke.width;
-    if (points.length < 2) {
-      if (points.length === 1) {
-        drawSterlingDot(points[0], w * 0.5, 0.9, 0.75);
+  function edt1d(f, d, v, z, n) {
+    let k = 0;
+    v[0] = 0;
+    z[0] = -1e20;
+    z[1] = 1e20;
+    for (let q = 1; q < n; q++) {
+      let p = v[k];
+      let s = (f[q] + q * q - (f[p] + p * p)) / (2 * q - 2 * p);
+      while (s <= z[k]) {
+        k--;
+        p = v[k];
+        s = (f[q] + q * q - (f[p] + p * p)) / (2 * q - 2 * p);
       }
+      k++;
+      v[k] = q;
+      z[k] = s;
+      z[k + 1] = 1e20;
+    }
+    k = 0;
+    for (let q = 0; q < n; q++) {
+      while (z[k + 1] < q) k++;
+      const p = v[k];
+      d[q] = (q - p) * (q - p) + f[p];
+    }
+  }
+
+  /** Euclidean distance from every inside pixel to the nearest outside pixel. */
+  function distanceInside(field, thr, w, h, out) {
+    const INF = 1e10;
+    const n = Math.max(w, h);
+    const f = new Float64Array(n);
+    const d = new Float64Array(n);
+    const z = new Float64Array(n + 1);
+    const v = new Int32Array(n);
+    for (let x = 0; x < w; x++) {
+      for (let y = 0; y < h; y++) f[y] = field[y * w + x] >= thr ? INF : 0;
+      edt1d(f, d, v, z, h);
+      for (let y = 0; y < h; y++) out[y * w + x] = d[y];
+    }
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) f[x] = out[row + x];
+      edt1d(f, d, v, z, w);
+      for (let x = 0; x < w; x++) out[row + x] = Math.sqrt(d[x]);
+    }
+  }
+
+  // --- Procedural studio environment the silver reflects -------------------
+  function unit3(x, y, z) {
+    const l = Math.hypot(x, y, z);
+    return [x / l, y / l, z / l];
+  }
+  const ENV_KEY = unit3(-0.5, -0.62, 0.6); // big soft box, upper-left
+  const ENV_STRIP = unit3(0.78, -0.3, 0.28); // thin strip light, right
+  const ENV_DARK = unit3(0.55, 0.65, 0.3); // black flag, lower-right
+  const ENV_DARK2 = unit3(-0.78, 0.4, 0.22); // second, smaller flag, lower-left
+
+  /** Luminance seen along reflection direction r (unit). z+ points at the viewer. */
+  function envLum(rx, ry, rz) {
+    // Bright ceiling, mid-grey horizon, light bench below
+    let v = rz >= 0 ? 0.74 + 0.12 * rz : 0.74 + 0.16 * rz;
+    // Dark wall ring between zenith and horizon — gives the classic chrome rim band
+    const t = (rz - 0.36) / 0.2;
+    v *= 1 - 0.82 * Math.exp(-t * t);
+
+    const dk = rx * ENV_KEY[0] + ry * ENV_KEY[1] + rz * ENV_KEY[2];
+    v += (1 - v) * smoothstep(0.84, 0.94, dk);
+
+    const dd1 = rx * ENV_DARK[0] + ry * ENV_DARK[1] + rz * ENV_DARK[2];
+    v *= 1 - 0.88 * smoothstep(0.3, 0.8, dd1);
+    const dd2 = rx * ENV_DARK2[0] + ry * ENV_DARK2[1] + rz * ENV_DARK2[2];
+    v *= 1 - 0.7 * smoothstep(0.55, 0.88, dd2);
+
+    const ds = rx * ENV_STRIP[0] + ry * ENV_STRIP[1] + rz * ENV_STRIP[2];
+    v = Math.max(v, smoothstep(0.975, 0.992, ds));
+
+    return Math.pow(Math.min(1, Math.max(0, v)), 1.12);
+  }
+
+  function emptyMetal() {
+    metal.empty = true;
+    metal.builtVersion = metal.version;
+  }
+
+  function widthBucket(w) {
+    return w < 10 ? 0 : w < 20 ? 1 : 2;
+  }
+
+  function buildMetal(quality) {
+    const list = activeStroke ? strokes.concat(activeStroke) : strokes;
+    if (list.length === 0) {
+      metal.builtQuality = quality;
+      emptyMetal();
       return;
     }
 
-    const radius = w * 0.5;
-    const ribbons = buildFrames(resample(points, Math.max(0.8, radius * 0.25)));
-    const selected = opts.selected;
+    // --- Extents + weight statistics
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let maxW = 0;
+    let sumW = 0;
+    const bucketMinW = [Infinity, Infinity, Infinity];
+    for (const s of list) {
+      sumW += s.width;
+      maxW = Math.max(maxW, s.width);
+      const b = widthBucket(s.width);
+      bucketMinW[b] = Math.min(bucketMinW[b], s.width);
+      for (const p of s.points) {
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      }
+    }
+    const meanW = sumW / list.length;
 
+    const margin = maxW * 1.1 + 18;
+    const x0 = Math.floor(Math.max(minX - margin, -300));
+    const y0 = Math.floor(Math.max(minY - margin, -300));
+    const x1 = Math.ceil(Math.min(maxX + margin, width + 300));
+    const y1 = Math.ceil(Math.min(maxY + margin, height + 300));
+    if (x1 - x0 < 2 || y1 - y0 < 2) {
+      metal.builtQuality = quality;
+      emptyMetal();
+      return;
+    }
+
+    const area = (x1 - x0) * (y1 - y0);
+    let s;
+    if (quality === "live") {
+      s = Math.min(0.5, Math.sqrt(SILVER.liveArea / area));
+    } else {
+      s = Math.min(dpr > 1 ? 1.5 : 1, Math.sqrt(SILVER.fullArea / area));
+    }
+    s = Math.max(0.15, s);
+    const gw = Math.max(2, Math.ceil((x1 - x0) * s));
+    const gh = Math.max(2, Math.ceil((y1 - y0) * s));
+    const n = gw * gh;
+
+    // --- 1. Rasterise strokes, one colour channel per weight bucket
+    if (maskCanvas.width !== gw || maskCanvas.height !== gh) {
+      maskCanvas.width = gw;
+      maskCanvas.height = gh;
+    }
+    const m = maskCtx;
+    m.setTransform(1, 0, 0, 1, 0, 0);
+    m.globalCompositeOperation = "source-over";
+    m.fillStyle = "#000";
+    m.fillRect(0, 0, gw, gh);
+    m.setTransform(s, 0, 0, s, -x0 * s, -y0 * s);
+    m.globalCompositeOperation = "lighter";
+    m.lineCap = "round";
+    m.lineJoin = "round";
+    const channelColor = ["#f00", "#0f0", "#00f"];
+    const bucketUsed = [false, false, false];
+    for (const st of list) {
+      const b = widthBucket(st.width);
+      bucketUsed[b] = true;
+      m.strokeStyle = channelColor[b];
+      m.fillStyle = channelColor[b];
+      m.lineWidth = st.width;
+      if (st.points.length === 1) {
+        m.beginPath();
+        m.arc(st.points[0].x, st.points[0].y, st.width / 2, 0, Math.PI * 2);
+        m.fill();
+      } else {
+        strokePolyline(st.points, m);
+      }
+    }
+    const px = m.getImageData(0, 0, gw, gh).data;
+
+    // --- 2. Metaball field: blur each bucket (radius ~ its thinnest stroke), sum
+    const F = buf("F", n);
+    const A = buf("A", n);
+    const T = buf("T", n);
+    F.fill(0, 0, n);
+    for (let ch = 0; ch < 3; ch++) {
+      if (!bucketUsed[ch]) continue;
+      for (let i = 0; i < n; i++) A[i] = px[i * 4 + ch] / 255;
+      gaussBlur(A, T, gw, gh, SILVER.goo * bucketMinW[ch] * s);
+      for (let i = 0; i < n; i++) F[i] += A[i];
+    }
+
+    // --- 3. Merged silhouette
+    const thr = SILVER.threshold;
+    const C = buf("C", n);
+    for (let i = 0; i < n; i++) C[i] = smoothstep(thr - 0.05, thr + 0.05, F[i]);
+
+    // --- 4. Height map: round-over edge + soft dome across larger pools
+    const Rg = Math.max(1.5, 0.5 * meanW * s);
+    const D = buf("D", n, Float64Array);
+    distanceInside(F, thr, gw, gh, D);
+
+    const H = buf("H", n);
+    for (let i = 0; i < n; i++) A[i] = C[i];
+    gaussBlur(A, T, gw, gh, 1.8 * Rg);
+    for (let y = 0; y < gh; y++) {
+      const wy = y0 + y / s;
+      for (let x = 0; x < gw; x++) {
+        const i = y * gw + x;
+        const di = D[i];
+        if (di > 0) {
+          const t = Math.min(1, Math.max(0, di - 0.5) / Rg);
+          const u = 1 - t;
+          const pool = A[i] * A[i];
+          // Slow ripples so big pools reflect in swoops instead of one flat tone
+          const wx = x0 + x / s;
+          const wob =
+            Math.sin(wx * 0.034 + Math.sin(wy * 0.021) * 2.1) *
+            Math.cos(wy * 0.029 + Math.cos(wx * 0.017) * 1.7);
+          H[i] = Rg * Math.sqrt(1 - u * u) + Rg * pool * (1.4 + 0.55 * wob);
+        } else {
+          H[i] = 0;
+        }
+      }
+    }
+    // Take the stair-steps out of the distance field
+    gaussBlur(H, T, gw, gh, 1.0);
+
+    // --- 5. Soft shadow source
+    const S = buf("S", n);
+    for (let i = 0; i < n; i++) S[i] = C[i];
+    gaussBlur(S, T, gw, gh, Math.max(1.2, 0.5 * Rg));
+    const shScale = Math.min(2, Math.max(0.6, (meanW * 0.5) / 7));
+    const sx1 = Math.round(1.0 * shScale * s);
+    const sy1 = Math.round(3.0 * shScale * s);
+    const sx2 = Math.round(0.3 * shScale * s);
+    const sy2 = Math.max(1, Math.round(0.9 * shScale * s));
+
+    // --- 6. Shade: normals from the height map, reflect the studio
+    if (metal.canvas.width !== gw || metal.canvas.height !== gh) {
+      metal.canvas.width = gw;
+      metal.canvas.height = gh;
+    }
+    const img = metalCtx.createImageData(gw, gh);
+    const out = img.data;
+    const SH_R = 28;
+    const SH_G = 36;
+    const SH_B = 44;
+
+    for (let y = 0; y < gh; y++) {
+      for (let x = 0; x < gw; x++) {
+        const i = y * gw + x;
+        const c = C[i];
+
+        // Shadow
+        const ax = Math.min(gw - 1, Math.max(0, x - sx1));
+        const ay = Math.min(gh - 1, Math.max(0, y - sy1));
+        const bx = Math.min(gw - 1, Math.max(0, x - sx2));
+        const by = Math.min(gh - 1, Math.max(0, y - sy2));
+        let aS = 1 - (1 - 0.3 * S[ay * gw + ax]) * (1 - 0.3 * S[by * gw + bx]);
+        aS *= 1 - c;
+
+        let r = SH_R;
+        let g = SH_G;
+        let b = SH_B;
+        let alpha = aS;
+
+        if (c > 0.003) {
+          const xl = x > 0 ? H[i - 1] : H[i];
+          const xr = x < gw - 1 ? H[i + 1] : H[i];
+          const yu = y > 0 ? H[i - gw] : H[i];
+          const yd = y < gh - 1 ? H[i + gw] : H[i];
+          const gx = (xr - xl) * 0.5;
+          const gy = (yd - yu) * 0.5;
+          const nz = 1 / Math.sqrt(gx * gx + gy * gy + 1);
+          const nx = -gx * nz;
+          const ny = -gy * nz;
+          const v = envLum(2 * nz * nx, 2 * nz * ny, 2 * nz * nz - 1);
+
+          const cr = Math.min(255, 18 + 238 * v);
+          const cg = Math.min(255, 21 + 239 * v);
+          const cb = Math.min(255, 28 + 240 * v);
+
+          alpha = c + aS * (1 - c);
+          const k = aS * (1 - c);
+          r = (cr * c + SH_R * k) / alpha;
+          g = (cg * c + SH_G * k) / alpha;
+          b = (cb * c + SH_B * k) / alpha;
+        }
+
+        const o = i * 4;
+        out[o] = r;
+        out[o + 1] = g;
+        out[o + 2] = b;
+        out[o + 3] = alpha * 255;
+      }
+    }
+    metalCtx.putImageData(img, 0, 0);
+
+    metal.x = x0;
+    metal.y = y0;
+    metal.w = gw / s;
+    metal.h = gh / s;
+    metal.empty = false;
+    metal.builtVersion = metal.version;
+    metal.builtQuality = quality;
+  }
+
+  function drawMetal(quality) {
+    const stale =
+      metal.builtVersion !== metal.version ||
+      (quality === "full" && metal.builtQuality !== "full");
+    if (stale) buildMetal(quality);
+    if (metal.empty) return;
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(metal.canvas, metal.x, metal.y, metal.w, metal.h);
+    ctx.restore();
+  }
+
+  function drawSelection() {
+    if (mode !== "move" || selectedId == null) return;
+    const sel = strokes.find((st) => st.id === selectedId);
+    if (!sel) return;
     ctx.save();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-
-    // Soft contact shadow — critical so bright silver separates from the bench
-    ctx.save();
-    ctx.translate(0.8, 2.2);
-    ctx.strokeStyle = "rgba(28, 36, 44, 0.28)";
-    ctx.lineWidth = w + 2.4;
-    strokePolyline(points);
-    ctx.restore();
-
-    // 1. Cool silver body — light enough to feel sterling, dark enough to read on white
-    ctx.strokeStyle = "#c4ccd6";
-    ctx.lineWidth = w;
-    strokePolyline(points);
-
-    // 2. Lit upper flank — near-white sterling face
-    ctx.strokeStyle = "rgba(250, 252, 255, 0.97)";
-    ctx.lineWidth = Math.max(2, w * 0.58);
-    strokePolyline(
-      offsetPolyline(ribbons, LIGHT.x * radius * 0.1, LIGHT.y * radius * 0.1, -radius * 0.14)
-    );
-
-    // 3. Dark env / AO underbelly — defines tubular form on a bright field
-    ctx.strokeStyle = "rgba(40, 46, 54, 0.55)";
-    ctx.lineWidth = Math.max(1.5, w * 0.4);
-    strokePolyline(offsetPolyline(ribbons, radius * 0.12, radius * 0.24, radius * 0.14));
-
-    // 4. Deeper cavity line (oxidized crease)
-    ctx.strokeStyle = "rgba(22, 26, 32, 0.5)";
-    ctx.lineWidth = Math.max(0.85, w * 0.12);
-    strokePolyline(offsetPolyline(ribbons, radius * 0.08, radius * 0.2, radius * 0.22));
-
-    // 5. Dark mirror streak (photographer / room reflection)
-    ctx.strokeStyle = "rgba(28, 34, 42, 0.62)";
-    ctx.lineWidth = Math.max(1, w * 0.11);
-    strokePolyline(offsetPolyline(ribbons, radius * 0.02, radius * 0.05, radius * 0.02));
-
-    // 7. Warm bench bounce
-    ctx.strokeStyle = "rgba(170, 152, 128, 0.22)";
-    ctx.lineWidth = Math.max(0.6, w * 0.08);
-    strokePolyline(offsetPolyline(ribbons, radius * 0.16, radius * 0.38, 0));
-
-    // 8. Broad sheen
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.32)";
-    ctx.lineWidth = Math.max(1.2, w * 0.2);
-    strokePolyline(
-      offsetPolyline(ribbons, LIGHT.x * radius * 0.05, LIGHT.y * radius * 0.05, -radius * 0.2)
-    );
-
-    // 9. Sharp specular thread — ping-modulated
-    for (let i = 1; i < ribbons.length; i++) {
-      const a = ribbons[i - 1];
-      const b = ribbons[i];
-      const ping = (a.ping + b.ping) * 0.5;
-      const facing = (a.facing + b.facing) * 0.5;
-      const alpha = 0.5 + ping * 0.5 + facing * 0.08;
-      ctx.strokeStyle = `rgba(255, 255, 255, ${Math.min(1, alpha)})`;
-      ctx.lineWidth = Math.max(1.1, w * (0.06 + ping * 0.14));
+    // Drawn under the silver, so it reads as a halo around the selected piece
+    ctx.strokeStyle = "rgba(70, 120, 160, 0.45)";
+    ctx.fillStyle = "rgba(70, 120, 160, 0.45)";
+    ctx.lineWidth = sel.width + 12;
+    if (sel.points.length === 1) {
       ctx.beginPath();
-      ctx.moveTo(
-        a.p.x + a.nx * radius * -0.34 + LIGHT.x * radius * 0.1,
-        a.p.y + a.ny * radius * -0.34 + LIGHT.y * radius * 0.1
-      );
-      ctx.lineTo(
-        b.p.x + b.nx * radius * -0.34 + LIGHT.x * radius * 0.1,
-        b.p.y + b.ny * radius * -0.34 + LIGHT.y * radius * 0.1
-      );
-      ctx.stroke();
-    }
-
-    // 10. Outer Fresnel rim — bright bezel lip
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
-    ctx.lineWidth = Math.max(0.65, w * 0.045);
-    strokePolyline(
-      offsetPolyline(ribbons, LIGHT.x * radius * 0.03, LIGHT.y * radius * 0.03, -radius * 0.48)
-    );
-
-    // End caps — keep terminals round and metallic
-    drawSterlingDot(points[0], radius, ribbons[0].facing, Math.max(0.55, ribbons[0].ping));
-    drawSterlingDot(
-      points[points.length - 1],
-      radius,
-      ribbons[ribbons.length - 1].facing,
-      Math.max(0.55, ribbons[ribbons.length - 1].ping)
-    );
-
-    // Glint sparks at high-ping samples
-    for (const f of ribbons) {
-      if (f.ping < 0.55) continue;
-      const gx = f.p.x + f.nx * radius * -0.34 + LIGHT.x * radius * 0.12;
-      const gy = f.p.y + f.ny * radius * -0.34 + LIGHT.y * radius * 0.12;
-      const gr = Math.max(1.2, w * 0.08 * f.ping);
-      const g = ctx.createRadialGradient(gx, gy, 0, gx, gy, gr * 2.2);
-      g.addColorStop(0, "rgba(255,255,255,0.95)");
-      g.addColorStop(0.4, "rgba(255,255,255,0.35)");
-      g.addColorStop(1, "rgba(255,255,255,0)");
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.arc(gx, gy, gr * 2.2, 0, Math.PI * 2);
+      ctx.arc(sel.points[0].x, sel.points[0].y, sel.width / 2 + 6, 0, Math.PI * 2);
       ctx.fill();
+    } else {
+      strokePolyline(sel.points);
     }
-
-    if (selected) {
-      ctx.setLineDash([4, 4]);
-      ctx.strokeStyle = "rgba(28, 36, 44, 0.55)";
-      ctx.lineWidth = w + 6;
-      strokePolyline(points);
-      ctx.setLineDash([]);
-    }
-
     ctx.restore();
   }
 
@@ -685,13 +881,25 @@
     }
   }
 
-  function render() {
+  /** quality "live" = fast, low-res metal (while drawing / dragging); "full" = settled. */
+  function render(quality = "full") {
     drawWorkbench();
-    for (const s of strokes) {
-      drawMetallicStroke(s, { selected: mode === "move" && s.id === selectedId });
-    }
-    if (activeStroke) drawMetallicStroke(activeStroke);
+    drawSelection();
+    drawMetal(quality);
     drawSeaGlass();
+  }
+
+  let rafId = 0;
+  let pendingQuality = "live";
+  function scheduleRender(quality = "live") {
+    if (quality === "full") pendingQuality = "full";
+    if (rafId) return;
+    rafId = requestAnimationFrame(() => {
+      rafId = 0;
+      const q = pendingQuality;
+      pendingQuality = "live";
+      render(q);
+    });
   }
 
   function appendPoint(p) {
@@ -699,7 +907,8 @@
     const pts = activeStroke.points;
     if (pts.length === 0 || dist(pts[pts.length - 1], p) >= 1.4) {
       pts.push(p);
-      render();
+      markMetalDirty();
+      scheduleRender("live");
     }
   }
 
@@ -709,6 +918,7 @@
     strokes = strokes.filter((s) => s.id !== selectedId);
     selectedId = null;
     syncChrome();
+    markMetalDirty();
     render();
   }
 
@@ -720,6 +930,7 @@
     selectedId = null;
     drag = null;
     syncChrome();
+    markMetalDirty();
     render();
   }
 
@@ -810,7 +1021,7 @@
       glass.x = drag.origin.x + (p.x - drag.start.x);
       glass.y = drag.origin.y + (p.y - drag.start.y);
       drag.last = p;
-      render();
+      render("live");
       return;
     }
 
@@ -819,7 +1030,7 @@
       const a1 = Math.atan2(p.y - glass.y, p.x - glass.x);
       glass.rotation = drag.origin.rotation + (a1 - a0);
       drag.last = p;
-      render();
+      render("live");
       return;
     }
 
@@ -837,10 +1048,11 @@
             pt.x += dx;
             pt.y += dy;
           }
+          markMetalDirty();
         }
       }
       drag.last = p;
-      render();
+      scheduleRender("live");
     }
   }
 
@@ -853,6 +1065,7 @@
         strokes.push(activeStroke);
       }
       activeStroke = null;
+      markMetalDirty();
     }
 
     drag = null;
