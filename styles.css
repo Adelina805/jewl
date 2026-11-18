@@ -40,12 +40,14 @@ body {
 
 .app {
   display: grid;
-  grid-template-rows: auto minmax(280px, 1fr) auto;
+  grid-template-rows: auto 1fr auto;
   height: 100%;
   max-width: 1100px;
   margin: 0 auto;
   padding: 1.1rem 1.25rem 1rem;
   gap: 0.65rem;
+  /* Chrome floats over the full-screen canvas; only its controls take clicks */
+  pointer-events: none;
 }
 
 .chrome {
@@ -53,6 +55,15 @@ body {
   align-items: center;
   gap: 1rem;
   z-index: 2;
+  pointer-events: none;
+}
+
+.chrome .brand,
+.chrome .actions,
+.chrome .modes,
+.chrome .thickness,
+.chrome .hint {
+  pointer-events: auto;
 }
 
 .chrome.top {
@@ -61,6 +72,7 @@ body {
 }
 
 .chrome.bottom {
+  align-self: end;
   justify-content: flex-start;
   flex-wrap: wrap;
   gap: 0.85rem 1.35rem;
@@ -135,36 +147,33 @@ input[type="range"]:focus-visible {
 }
 
 .stage {
-  position: relative;
-  min-height: 0;
-  max-height: min(64vh, 680px);
-  border-radius: 1.35rem;
+  /* Full-viewport drawing surface; header and footer float above it */
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: auto;
   overflow: hidden;
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.45) inset,
-    0 18px 40px rgba(28, 36, 44, 0.12);
-  animation: rise 900ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: fade-in 900ms ease-out both;
 }
 
 #canvas {
   display: block;
   width: 100%;
   height: 100%;
+  pointer-events: auto;
   touch-action: none;
   cursor: crosshair;
 }
 
-.stage[data-mode="move"] #canvas,
-.stage[data-mode="select"] #canvas {
+.stage[data-mode="move"] #canvas {
   cursor: default;
 }
 
-.stage[data-mode="move"].dragging #canvas,
-.stage[data-mode="select"].dragging #canvas {
+.stage[data-mode="move"].dragging #canvas {
   cursor: grabbing;
 }
 
-.stage[data-mode="select"].over-stroke #canvas {
+.stage[data-mode="move"].over-object #canvas {
   cursor: grab;
 }
 
@@ -252,14 +261,12 @@ input[type="range"]:focus-visible {
   }
 }
 
-@keyframes rise {
+@keyframes fade-in {
   from {
     opacity: 0;
-    transform: translateY(14px) scale(0.985);
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
   }
 }
 

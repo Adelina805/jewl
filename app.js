@@ -39,6 +39,7 @@
     rotation: -0.18,
     scale: 1,
     placed: false,
+    userMoved: false,
     outline: buildSeaGlassOutline(),
   };
 
@@ -46,9 +47,8 @@
   let drag = null;
 
   const HINTS = {
-    draw: "Draw silver around the glass. Edit moves strokes; Place moves the glass.",
-    select: "Click a stroke to select it. Drag to move. Delete or ⌫ removes it.",
-    move: "Drag the glass to place it. Drag the handle to rotate.",
+    draw: "Draw silver around the glass. Switch to Move to reposition anything.",
+    move: "Drag any silver stroke or the glass. Drag the handle to rotate the glass. Delete or ⌫ removes a selected stroke.",
   };
 
   function buildSeaGlassOutline() {
@@ -124,7 +124,7 @@
   function syncChrome() {
     undoBtn.disabled = undoStack.length === 0 && !activeStroke;
     redoBtn.disabled = redoStack.length === 0;
-    deleteBtn.disabled = selectedId == null || mode !== "select";
+    deleteBtn.disabled = selectedId == null || mode !== "move";
   }
 
   function resize() {
@@ -138,7 +138,8 @@
     canvas.style.height = `${height}px`;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    if (!glass.placed) {
+    // Re-center until the user moves the glass, so full-window resizes stay balanced
+    if (!glass.placed || !glass.userMoved) {
       glass.x = width * 0.5;
       glass.y = height * 0.48;
       glass.scale = Math.min(1.15, Math.max(0.85, width / 720));
@@ -247,9 +248,9 @@
     document.querySelectorAll(".mode").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.mode === next);
     });
-    if (next !== "select") {
+    if (next !== "move") {
       selectedId = null;
-      stage.classList.remove("over-stroke");
+      stage.classList.remove("over-object");
     }
     hint.textContent = HINTS[next] || HINTS.draw;
     syncChrome();
@@ -687,7 +688,7 @@
   function render() {
     drawWorkbench();
     for (const s of strokes) {
-      drawMetallicStroke(s, { selected: mode === "select" && s.id === selectedId });
+      drawMetallicStroke(s, { selected: mode === "move" && s.id === selectedId });
     }
     if (activeStroke) drawMetallicStroke(activeStroke);
     drawSeaGlass();
@@ -727,8 +728,12 @@
     const p = pointerPos(e);
     canvas.setPointerCapture(e.pointerId);
 
+    // Move mode — one tool for everything on the canvas.
+    // Pick order: rotate handle, then silver (precise, thin targets), then glass.
     if (mode === "move") {
       if (hitRotateHandle(p)) {
+        selectedId = null;
+        glass.userMoved = true;
         drag = {
           kind: "rotate",
           start: p,
@@ -736,27 +741,14 @@
           last: p,
         };
         stage.classList.add("dragging");
+        syncChrome();
+        render();
         return;
       }
-      if (pointInGlass(p)) {
-        drag = {
-          kind: "move-glass",
-          start: p,
-          origin: { x: glass.x, y: glass.y },
-          last: p,
-        };
-        stage.classList.add("dragging");
-        return;
-      }
-      return;
-    }
 
-    if (mode === "select") {
       const hit = hitStrokeAt(p);
-      selectedId = hit ? hit.id : null;
-      syncChrome();
-      render();
       if (hit) {
+        selectedId = hit.id;
         drag = {
           kind: "move-stroke",
           start: p,
@@ -766,7 +758,24 @@
           moved: false,
         };
         stage.classList.add("dragging");
+        syncChrome();
+        render();
+        return;
       }
+
+      selectedId = null;
+      if (pointInGlass(p)) {
+        glass.userMoved = true;
+        drag = {
+          kind: "move-glass",
+          start: p,
+          origin: { x: glass.x, y: glass.y },
+          last: p,
+        };
+        stage.classList.add("dragging");
+      }
+      syncChrome();
+      render();
       return;
     }
 
@@ -784,9 +793,9 @@
   function onPointerMove(e) {
     const p = pointerPos(e);
 
-    if (mode === "select" && !drag) {
-      const over = hitStrokeAt(p);
-      stage.classList.toggle("over-stroke", !!over);
+    if (mode === "move" && !drag) {
+      const over = hitRotateHandle(p) || hitStrokeAt(p) || pointInGlass(p);
+      stage.classList.toggle("over-object", !!over);
     }
 
     if (!drag) return;
@@ -893,7 +902,7 @@
       return;
     }
 
-    if ((e.key === "Backspace" || e.key === "Delete") && mode === "select") {
+    if ((e.key === "Backspace" || e.key === "Delete") && mode === "move") {
       if (selectedId != null) {
         e.preventDefault();
         deleteSelected();
@@ -903,8 +912,7 @@
 
     if (!meta && !e.altKey) {
       if (key === "d" || key === "s") setMode("draw");
-      if (key === "e") setMode("select");
-      if (key === "p") setMode("move");
+      if (key === "m" || key === "e" || key === "p") setMode("move");
       if (key === "escape") {
         selectedId = null;
         syncChrome();

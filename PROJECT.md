@@ -11,10 +11,11 @@ Product commitment: no generative AI in the experience — every shape stays dir
 First working prototype:
 - One pendant canvas with a cool coastal workbench look
 - One movable, rotatable sea-glass piece (procedural frosted shard)
+- Full-window canvas with header and controls floating over it
 - Freehand silver strokes with Weight control
-- Edit mode: select, move, and delete individual strokes
+- Move mode: one tool to drag any silver stroke or the glass, rotate the glass via its handle, and select/delete strokes
 - Undo / redo / clear
-- Modes keep drawing vs placing glass vs editing strokes unambiguous
+- Two modes only (Silver · Move), so drawing never accidentally moves anything
 
 Out of scope for now: accounts, payments, manufacturing export, photo import, multi-stone library, AI generation.
 
@@ -23,7 +24,8 @@ Out of scope for now: accounts, payments, manufacturing export, photo import, mu
 - **Silver:** Layered Canvas 2D “polished sterling” stroke (not a 3D PBR shader). Aimed at the attached reference look: bright cool body, charcoal env/AO recesses, sharp white specular thread + Fresnel rim, warm bench bounce, ping glints on curves. Stroke-led layers (not dense lit discs) so dark reflection bands aren’t stamped out.
 - **Sea glass:** Irregular closed path with soft frost rim, depth bloom, and a small specular kiss.
 - **Workbench:** Slightly brighter studio field + upper-left key pool so metal has luminous surroundings to “reflect.”
-- **Interaction:** Silver (draw) · Edit (strokes) · Place (glass + rotate handle). Drawing never moves the glass.
+- **Interaction:** Silver (draw) · Move (everything else). Edit and Place were merged. In Move, pick order is rotate handle → silver stroke → glass, so thin strokes stay grabbable next to or over the glass. Clicking empty canvas deselects. Shortcuts: `D`/`S` Silver, `M` (also `E`/`P`) Move, ⌫ deletes the selected stroke.
+- **Layout:** The canvas is fixed to the full viewport; the header and footer are pointer-transparent except for their controls, so you can draw under them.
 - **History:** Undo/redo snapshots cover stroke create, move, delete, and clear. Glass placement is live and not history-tracked.
 
 ## Limitations
@@ -32,13 +34,18 @@ Out of scope for now: accounts, payments, manufacturing export, photo import, mu
 - Thin strokes on the bright bench need the dark underbelly/contact shadow to stay readable; very fine Weight can still look soft.
 - No stylus pressure / tilt yet.
 - Strokes render under the glass; no true bezel depth or overlapping metal-over-stone compositing.
-- Glass move/rotate is not on the undo stack.
+- Glass move/rotate is not on the undo stack (stroke moves, deletes, and clear are).
+- Only silver strokes can be selected/deleted; the glass can be moved and rotated but not deleted.
+- The glass and its rotate handle are always shown in Move mode, and the glass stays at a fixed size, so it can look small on very large displays.
+- Overlapping silver is grabbed topmost-first; a stroke running through the glass can be picked over the glass at that line.
 
 ## Latest feedback
 Silver looked like soft tubular gray / plastic, not polished sterling. References show high dynamic range (near-white highlights + charcoal recesses), bright bezel rims, and environment-driven contrast rather than muddy mid-gray.
 
 ## Verification
-- Local static server; UI loads; Silver / Edit / Place modes switch; undo / redo exercised.
+- Local static server; UI loads; Silver / Move modes switch; undo / redo exercised.
+- Move mode, checked by canvas pixel sampling on a fresh tab (783×772 viewport): dragged a stroke (old spot cleared, new spot inked), rotated the glass via the handle (glass stayed centered), dragged the glass (old spot cleared, new spot teal), selected a stroke (Delete enabled), deleted it, undid the delete (stroke restored), and clicked empty space (deselected).
+- Not yet checked with a real mouse or trackpad: grab/grabbing cursor feel and handle hit comfort. The checks above used synthetic pointer events.
 - Freehand silver redrawn after material change; pixel sampling on metal regions ~avg L 180–190 with bright speculars (~60%) and visible dark bands (~10%).
 - Still worth your eye on a real display: whether the metal feels “sterling” next to your reference photos, and trackpad/stylus drawing comfort.
 
