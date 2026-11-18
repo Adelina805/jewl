@@ -1,34 +1,44 @@
-# jewl.io — Sea Glass Sketchbook
+# jewl — Project
 
-## Goal
-Explore a browser jewelry sketchbook: place sea glass on a canvas and draw silver around it to imagine a pendant.
+## Goal and audience
+Browser jewelry sketchbook for independent makers and hobbyists. Test whether drawing silver around sea glass feels satisfying and helps someone imagine a pendant.
+
+Working tagline: “Your hands. Your eye. Your design.”
+
+Product commitment: no generative AI in the experience — every shape stays directly editable; materials respond predictably to user choices.
 
 ## Current scope
-First visual prototype only:
-- One movable, rotatable sea-glass piece
-- Freehand silver drawing with adjustable thickness
-- Dimensional metallic stroke appearance
-- Undo and clear
-- Minimal UI that keeps focus on the piece
+First working prototype:
+- One pendant canvas with a cool coastal workbench look
+- One movable, rotatable sea-glass piece (procedural frosted shard)
+- Freehand silver strokes with Weight control
+- Edit mode: select, move, and delete individual strokes
+- Undo / redo / clear
+- Modes keep drawing vs placing glass vs editing strokes unambiguous
 
-Out of scope: fabrication exports, multiple stones, saved collections, accounts.
+Out of scope for now: accounts, payments, manufacturing export, photo import, multi-stone library, AI generation.
 
 ## Decisions
-- **Stack:** Static HTML / CSS / Canvas 2D — no build step; fastest path to drawing feel.
-- **Materials:** Procedural sea glass (organic path + frosted fills); silver as overlapping lit discs (tubular stamp brush) plus a fine specular thread.
-- **Interaction:** Draw mode by default; Place mode to drag the glass and rotate via a handle. Thickness via a single Weight slider.
-- **Look:** Cool coastal atelier — soft blue-gray field, quiet chrome controls, attention on glass and metal.
+- **Stack:** Static HTML / CSS / Canvas 2D — no build step; fast path to drawing feel.
+- **Silver:** Tubular stamp brush (lit discs + cool underbelly + thin specular thread). Illustrative metal, not fabrication-accurate.
+- **Sea glass:** Irregular closed path with soft frost rim, depth bloom, and a small specular kiss.
+- **Interaction:** Silver (draw) · Edit (strokes) · Place (glass + rotate handle). Drawing never moves the glass.
+- **History:** Undo/redo snapshots cover stroke create, move, delete, and clear. Glass placement is live and not history-tracked.
 
 ## Limitations
-- Single glass shape (not photo-based or a full collection).
-- Silver is illustrative, not physically accurate or exportable for fabrication.
-- No pressure sensitivity / stylus tilt yet.
-- Strokes sit under the glass; no true bezel depth or casting simulation.
+- Single procedural glass shape (not photo-based).
+- Silver is visual only — not physically accurate or exportable for casting.
+- No stylus pressure / tilt yet.
+- Strokes render under the glass; no true bezel depth or overlapping metal-over-stone compositing.
+- Glass move/rotate is not on the undo stack.
+
+## Latest feedback
+None yet — first experiment ready for design review.
 
 ## Verification
-- Served locally; UI loads; sea glass renders with frost/highlight.
-- Freehand silver, Weight slider, Undo, Clear, and Place (move + rotate handle) exercised in-browser.
-- Not fully verified by hand: trackpad/stylus drawing feel, touch on a phone, or metallic look on a calibrated display.
+- Local static server; UI loads; modes switch; glass places and rotates.
+- Freehand silver, Weight, Edit (select/move/delete), Undo/Redo/Clear exercised via browser automation.
+- Still needs your eye: metallic “feel,” frost softness, and trackpad/stylus drawing comfort on your display.
 
 ## Next useful step
-Tune stroke feel with a real mouse/trackpad (and optionally stylus), then decide whether a second glass shape or a photo-based stone is worth adding.
+Tune materials and stroke feel from your visual feedback, then decide whether a second glass shape or photo-based stone is worth adding.

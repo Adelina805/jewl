@@ -17,11 +17,17 @@
       <header class="chrome top">
         <div class="brand">
           <h1>jewl</h1>
-          <p>sea glass · silver</p>
+          <p>Your hands. Your eye. Your design.</p>
         </div>
         <div class="actions">
-          <button type="button" id="undo" class="ghost" title="Undo last stroke (⌘Z)">
+          <button type="button" id="undo" class="ghost" title="Undo (⌘Z)">
             Undo
+          </button>
+          <button type="button" id="redo" class="ghost" title="Redo (⌘⇧Z)">
+            Redo
+          </button>
+          <button type="button" id="delete" class="ghost" title="Delete selected stroke (⌫)" disabled>
+            Delete
           </button>
           <button type="button" id="clear" class="ghost" title="Clear all silver">
             Clear
@@ -37,6 +43,9 @@
         <div class="modes" role="group" aria-label="Tool">
           <button type="button" class="mode active" data-mode="draw" id="mode-draw">
             Silver
+          </button>
+          <button type="button" class="mode" data-mode="select" id="mode-select">
+            Edit
           </button>
           <button type="button" class="mode" data-mode="move" id="mode-move">
             Place
@@ -56,7 +65,9 @@
           />
         </label>
 
-        <p class="hint" id="hint">Draw silver around the glass. Switch to Place to move or rotate.</p>
+        <p class="hint" id="hint">
+          Draw silver around the glass. Edit moves strokes; Place moves the glass.
+        </p>
       </footer>
     </div>
     <script src="app.js"></script>

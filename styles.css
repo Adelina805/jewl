@@ -83,13 +83,14 @@ body {
   margin: 0.2rem 0 0;
   font-size: 0.72rem;
   font-weight: 300;
-  letter-spacing: 0.16em;
-  text-transform: lowercase;
+  letter-spacing: 0.08em;
   color: var(--ink-soft);
 }
 
 .actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 0.4rem;
 }
 
@@ -111,13 +112,19 @@ button {
   font-weight: 400;
   letter-spacing: 0.02em;
   color: var(--ink-soft);
-  transition: color 160ms ease, background 160ms ease, border-color 160ms ease;
+  transition: color 160ms ease, background 160ms ease, border-color 160ms ease,
+    opacity 160ms ease;
 }
 
-.ghost:hover {
+.ghost:hover:not(:disabled) {
   color: var(--ink);
   background: rgba(255, 255, 255, 0.62);
   border-color: rgba(28, 36, 44, 0.18);
+}
+
+.ghost:disabled {
+  opacity: 0.38;
+  cursor: default;
 }
 
 .ghost:focus-visible,
@@ -130,7 +137,7 @@ input[type="range"]:focus-visible {
 .stage {
   position: relative;
   min-height: 0;
-  max-height: min(72vh, 740px);
+  max-height: min(64vh, 680px);
   border-radius: 1.35rem;
   overflow: hidden;
   box-shadow:
@@ -147,12 +154,18 @@ input[type="range"]:focus-visible {
   cursor: crosshair;
 }
 
-.stage[data-mode="move"] #canvas {
-  cursor: grab;
+.stage[data-mode="move"] #canvas,
+.stage[data-mode="select"] #canvas {
+  cursor: default;
 }
 
-.stage[data-mode="move"].dragging #canvas {
+.stage[data-mode="move"].dragging #canvas,
+.stage[data-mode="select"].dragging #canvas {
   cursor: grabbing;
+}
+
+.stage[data-mode="select"].over-stroke #canvas {
+  cursor: grab;
 }
 
 .modes {
@@ -196,7 +209,7 @@ input[type="range"]:focus-visible {
 .hint {
   margin: 0;
   margin-left: auto;
-  max-width: 28rem;
+  max-width: 30rem;
   font-size: 0.8rem;
   font-weight: 300;
   color: var(--ink-soft);
@@ -216,6 +229,15 @@ input[type="range"]:focus-visible {
 
   .chrome.bottom {
     gap: 0.7rem;
+  }
+
+  .actions {
+    gap: 0.3rem;
+  }
+
+  .ghost {
+    padding: 0.4rem 0.65rem;
+    font-size: 0.76rem;
   }
 }
 
