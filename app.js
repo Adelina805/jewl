@@ -257,15 +257,31 @@
   }
 
   function drawWorkbench() {
+    // Brighter studio-like field so polished silver has something luminous to "reflect"
     const g = ctx.createLinearGradient(0, 0, width, height);
-    g.addColorStop(0, "#d9e2e8");
-    g.addColorStop(0.45, "#e7eeef");
-    g.addColorStop(1, "#d5dfd9");
+    g.addColorStop(0, "#e4ebf0");
+    g.addColorStop(0.4, "#f2f5f6");
+    g.addColorStop(1, "#dde6e0");
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, width, height);
 
+    // Soft key light pool from upper-left
+    const key = ctx.createRadialGradient(
+      width * 0.32,
+      height * 0.22,
+      Math.min(width, height) * 0.05,
+      width * 0.45,
+      height * 0.4,
+      Math.max(width, height) * 0.7
+    );
+    key.addColorStop(0, "rgba(255, 255, 255, 0.55)");
+    key.addColorStop(0.45, "rgba(255, 255, 255, 0.12)");
+    key.addColorStop(1, "rgba(255, 255, 255, 0)");
+    ctx.fillStyle = key;
+    ctx.fillRect(0, 0, width, height);
+
     ctx.save();
-    ctx.globalAlpha = 0.035;
+    ctx.globalAlpha = 0.03;
     for (let i = 0; i < 160; i++) {
       const x = Math.abs(Math.sin(i * 12.9898) * 43758.5453) % 1;
       const y = Math.abs(Math.sin(i * 78.233) * 93758.1234) % 1;
@@ -276,14 +292,14 @@
 
     const vig = ctx.createRadialGradient(
       width * 0.5,
-      height * 0.45,
-      Math.min(width, height) * 0.2,
+      height * 0.42,
+      Math.min(width, height) * 0.22,
       width * 0.5,
-      height * 0.5,
-      Math.max(width, height) * 0.72
+      height * 0.55,
+      Math.max(width, height) * 0.75
     );
     vig.addColorStop(0, "rgba(255,255,255,0)");
-    vig.addColorStop(1, "rgba(70, 88, 100, 0.14)");
+    vig.addColorStop(1, "rgba(70, 88, 100, 0.1)");
     ctx.fillStyle = vig;
     ctx.fillRect(0, 0, width, height);
   }
@@ -331,62 +347,58 @@
     return out;
   }
 
-  function drawMetallicStroke(stroke, opts = {}) {
-    const points = stroke.points;
-    const w = stroke.width;
-    if (points.length < 2) {
-      if (points.length === 1) {
-        const p = points[0];
-        const r = w * 0.5;
-        const grad = ctx.createRadialGradient(
-          p.x - r * 0.25,
-          p.y - r * 0.3,
-          r * 0.05,
-          p.x,
-          p.y,
-          r
-        );
-        grad.addColorStop(0, "#f4f6f8");
-        grad.addColorStop(0.45, "#b4bdc7");
-        grad.addColorStop(0.78, "#7a848f");
-        grad.addColorStop(1, "#4a525c");
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-        ctx.fillStyle = grad;
-        ctx.fill();
-      }
-      return;
+  // Key light from upper-left (coastal workbench + reference photos)
+  const LIGHT = { x: -0.52, y: -0.78 };
+
+  function clampByte(n) {
+    return Math.max(0, Math.min(255, n | 0));
+  }
+
+  function rgbCss(r, g, b, a = 1) {
+    return `rgba(${clampByte(r)}, ${clampByte(g)}, ${clampByte(b)}, ${a})`;
+  }
+
+  /** Cap / single-point stamp — same material language as stroke layers */
+  function drawSterlingDot(p, radius, facing = 0.75, ping = 0.55) {
+    const glint = Math.pow(facing, 1.35);
+    const hx = p.x + LIGHT.x * radius * 0.45;
+    const hy = p.y + LIGHT.y * radius * 0.45;
+
+    const grad = ctx.createRadialGradient(hx, hy, radius * 0.02, p.x, p.y, radius);
+    grad.addColorStop(0, rgbCss(255, 255, 255));
+    grad.addColorStop(0.18, rgbCss(220 + glint * 20, 228 + glint * 16, 236 + glint * 10));
+    grad.addColorStop(0.45, rgbCss(150 + facing * 20, 160 + facing * 18, 174 + facing * 12));
+    grad.addColorStop(0.7, rgbCss(54, 60, 70));
+    grad.addColorStop(0.88, rgbCss(140 + glint * 20, 148 + glint * 16, 160 + glint * 12));
+    grad.addColorStop(1, rgbCss(210 + glint * 20, 216 + glint * 16, 224 + glint * 10));
+
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    if (ping > 0.2) {
+      const sx = p.x + LIGHT.x * radius * 0.5;
+      const sy = p.y + LIGHT.y * radius * 0.5;
+      const spec = ctx.createRadialGradient(sx, sy, 0, sx, sy, radius * 0.28);
+      spec.addColorStop(0, `rgba(255,255,255,${0.7 + ping * 0.3})`);
+      spec.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = spec;
+      ctx.fill();
     }
+  }
 
-    const radius = w * 0.5;
-    const samples = resample(points, Math.max(0.9, radius * 0.28));
-    const selected = opts.selected;
+  function offsetPolyline(frames, ox, oy, alongN = 0) {
+    return frames.map(({ p, nx, ny }) => ({
+      x: p.x + ox + nx * alongN,
+      y: p.y + oy + ny * alongN,
+    }));
+  }
 
-    ctx.save();
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-
-    // Soft contact shadow — keeps metal grounded on the bench
-    ctx.save();
-    ctx.translate(0.6, 1.5);
-    ctx.strokeStyle = "rgba(28, 36, 44, 0.16)";
-    ctx.lineWidth = w + 1.5;
-    strokePolyline(points);
-    ctx.restore();
-
-    // Cool shadowed underbelly (gives tubular depth without plastic white)
-    ctx.strokeStyle = "rgba(55, 62, 72, 0.55)";
-    ctx.lineWidth = w;
-    strokePolyline(
-      samples.map((p) => ({
-        x: p.x + radius * 0.08,
-        y: p.y + radius * 0.12,
-      }))
-    );
-
-    // Body fill via lit discs — cooler midtones, restrained highlight
-    for (let i = 0; i < samples.length; i++) {
-      const p = samples[i];
+  function buildFrames(samples) {
+    return samples.map((p, i) => {
       const prev = samples[Math.max(0, i - 1)];
       const next = samples[Math.min(samples.length - 1, i + 1)];
       let tx = next.x - prev.x;
@@ -396,44 +408,130 @@
       ty /= len;
       const nx = -ty;
       const ny = tx;
+      const facing = Math.max(0, Math.min(1, (-nx * LIGHT.x - ny * LIGHT.y) * 0.5 + 0.55));
+      const side = Math.abs(tx * LIGHT.x + ty * LIGHT.y);
+      const ping = Math.pow(1 - side, 2.2) * (0.35 + facing * 0.65);
+      return { p, tx, ty, nx, ny, facing, ping };
+    });
+  }
 
-      const hx = p.x + nx * radius * -0.32 - radius * 0.1;
-      const hy = p.y + ny * radius * -0.32 - radius * 0.18;
-
-      const grad = ctx.createRadialGradient(hx, hy, radius * 0.02, p.x, p.y, radius);
-      grad.addColorStop(0, "#fbfcfd");
-      grad.addColorStop(0.1, "#eef2f5");
-      grad.addColorStop(0.28, "#d2dae2");
-      grad.addColorStop(0.5, "#aeb8c3");
-      grad.addColorStop(0.72, "#87919c");
-      grad.addColorStop(0.88, "#5f6771");
-      grad.addColorStop(1, "#454c55");
-
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
-      ctx.fillStyle = grad;
-      ctx.fill();
+  function drawMetallicStroke(stroke, opts = {}) {
+    const points = stroke.points;
+    const w = stroke.width;
+    if (points.length < 2) {
+      if (points.length === 1) {
+        drawSterlingDot(points[0], w * 0.5, 0.9, 0.75);
+      }
+      return;
     }
 
-    // Narrow specular thread — bright but thin, like brushed wire
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.42)";
-    ctx.lineWidth = Math.max(0.55, w * 0.065);
+    const radius = w * 0.5;
+    const ribbons = buildFrames(resample(points, Math.max(0.8, radius * 0.25)));
+    const selected = opts.selected;
+
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    // Soft contact shadow — critical so bright silver separates from the bench
+    ctx.save();
+    ctx.translate(0.8, 2.2);
+    ctx.strokeStyle = "rgba(28, 36, 44, 0.28)";
+    ctx.lineWidth = w + 2.4;
+    strokePolyline(points);
+    ctx.restore();
+
+    // 1. Cool silver body — light enough to feel sterling, dark enough to read on white
+    ctx.strokeStyle = "#c4ccd6";
+    ctx.lineWidth = w;
+    strokePolyline(points);
+
+    // 2. Lit upper flank — near-white sterling face
+    ctx.strokeStyle = "rgba(250, 252, 255, 0.97)";
+    ctx.lineWidth = Math.max(2, w * 0.58);
     strokePolyline(
-      samples.map((p) => ({
-        x: p.x - radius * 0.22,
-        y: p.y - radius * 0.26,
-      }))
+      offsetPolyline(ribbons, LIGHT.x * radius * 0.1, LIGHT.y * radius * 0.1, -radius * 0.14)
     );
 
-    // Soft cooler edge glaze on the dark side
-    ctx.strokeStyle = "rgba(40, 48, 58, 0.22)";
-    ctx.lineWidth = Math.max(0.5, w * 0.05);
+    // 3. Dark env / AO underbelly — defines tubular form on a bright field
+    ctx.strokeStyle = "rgba(40, 46, 54, 0.55)";
+    ctx.lineWidth = Math.max(1.5, w * 0.4);
+    strokePolyline(offsetPolyline(ribbons, radius * 0.12, radius * 0.24, radius * 0.14));
+
+    // 4. Deeper cavity line (oxidized crease)
+    ctx.strokeStyle = "rgba(22, 26, 32, 0.5)";
+    ctx.lineWidth = Math.max(0.85, w * 0.12);
+    strokePolyline(offsetPolyline(ribbons, radius * 0.08, radius * 0.2, radius * 0.22));
+
+    // 5. Dark mirror streak (photographer / room reflection)
+    ctx.strokeStyle = "rgba(28, 34, 42, 0.62)";
+    ctx.lineWidth = Math.max(1, w * 0.11);
+    strokePolyline(offsetPolyline(ribbons, radius * 0.02, radius * 0.05, radius * 0.02));
+
+    // 7. Warm bench bounce
+    ctx.strokeStyle = "rgba(170, 152, 128, 0.22)";
+    ctx.lineWidth = Math.max(0.6, w * 0.08);
+    strokePolyline(offsetPolyline(ribbons, radius * 0.16, radius * 0.38, 0));
+
+    // 8. Broad sheen
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.32)";
+    ctx.lineWidth = Math.max(1.2, w * 0.2);
     strokePolyline(
-      samples.map((p) => ({
-        x: p.x + radius * 0.28,
-        y: p.y + radius * 0.3,
-      }))
+      offsetPolyline(ribbons, LIGHT.x * radius * 0.05, LIGHT.y * radius * 0.05, -radius * 0.2)
     );
+
+    // 9. Sharp specular thread — ping-modulated
+    for (let i = 1; i < ribbons.length; i++) {
+      const a = ribbons[i - 1];
+      const b = ribbons[i];
+      const ping = (a.ping + b.ping) * 0.5;
+      const facing = (a.facing + b.facing) * 0.5;
+      const alpha = 0.5 + ping * 0.5 + facing * 0.08;
+      ctx.strokeStyle = `rgba(255, 255, 255, ${Math.min(1, alpha)})`;
+      ctx.lineWidth = Math.max(1.1, w * (0.06 + ping * 0.14));
+      ctx.beginPath();
+      ctx.moveTo(
+        a.p.x + a.nx * radius * -0.34 + LIGHT.x * radius * 0.1,
+        a.p.y + a.ny * radius * -0.34 + LIGHT.y * radius * 0.1
+      );
+      ctx.lineTo(
+        b.p.x + b.nx * radius * -0.34 + LIGHT.x * radius * 0.1,
+        b.p.y + b.ny * radius * -0.34 + LIGHT.y * radius * 0.1
+      );
+      ctx.stroke();
+    }
+
+    // 10. Outer Fresnel rim — bright bezel lip
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+    ctx.lineWidth = Math.max(0.65, w * 0.045);
+    strokePolyline(
+      offsetPolyline(ribbons, LIGHT.x * radius * 0.03, LIGHT.y * radius * 0.03, -radius * 0.48)
+    );
+
+    // End caps — keep terminals round and metallic
+    drawSterlingDot(points[0], radius, ribbons[0].facing, Math.max(0.55, ribbons[0].ping));
+    drawSterlingDot(
+      points[points.length - 1],
+      radius,
+      ribbons[ribbons.length - 1].facing,
+      Math.max(0.55, ribbons[ribbons.length - 1].ping)
+    );
+
+    // Glint sparks at high-ping samples
+    for (const f of ribbons) {
+      if (f.ping < 0.55) continue;
+      const gx = f.p.x + f.nx * radius * -0.34 + LIGHT.x * radius * 0.12;
+      const gy = f.p.y + f.ny * radius * -0.34 + LIGHT.y * radius * 0.12;
+      const gr = Math.max(1.2, w * 0.08 * f.ping);
+      const g = ctx.createRadialGradient(gx, gy, 0, gx, gy, gr * 2.2);
+      g.addColorStop(0, "rgba(255,255,255,0.95)");
+      g.addColorStop(0.4, "rgba(255,255,255,0.35)");
+      g.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(gx, gy, gr * 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     if (selected) {
       ctx.setLineDash([4, 4]);
