@@ -21,7 +21,8 @@ Out of scope for now: accounts, payments, manufacturing export, photo import, mu
 
 ## Decisions
 - **Stack:** Static HTML / CSS / Canvas 2D — no build step; fast path to drawing feel.
-- **Silver:** Liquid / soldered silver. Strokes are summed into a soft metaball field and thresholded, so strokes that touch or come near each other fuse into one mass with rounded fillets (like solder flowing together). The merged silhouette becomes a height map (rounded edge + dome + slow ripples), normals come from it, and each pixel reflects a procedural studio environment (soft box, dark flags, strip light, dark wall ring) for the chrome look. Rendered in JS on a cached offscreen canvas at low-res while drawing/dragging and at higher res once settled. Tunable via `SILVER.goo` / `SILVER.threshold` in `app.js`.
+- **Silver:** Liquid / soldered silver. Strokes are summed into a soft metaball field and thresholded, so strokes that touch or come near each other fuse into one mass with rounded fillets (like solder flowing together). The merged silhouette becomes a height map (rounded edge from a jump-flood distance field + dome + slow ripples), normals come from it, and each pixel reflects a procedural studio environment (soft box, dark flags, strip light, dark wall ring) for the chrome look.
+- **Silver renderer:** WebGL2 (`silver-gl.js`) does everything on the GPU: capsule masks per weight bucket, gaussian blur (wide blurs at reduced resolution), jump flood, height map, then a final full-device-resolution pass with an analytic anti-aliased edge. Redrawn on every stroke change, cached for glass moves/rotation. If WebGL2 or float render targets are missing, `app.js` falls back to the older CPU renderer (same look, slower and lower resolution). `stage.dataset.renderer` reads `webgl` or `cpu`. Tunable via `SILVER.goo` / `SILVER.threshold` in `app.js`.
 - **Sea glass:** Irregular closed path with soft frost rim, depth bloom, and a small specular kiss.
 - **Workbench:** Slightly brighter studio field + upper-left key pool so metal has luminous surroundings to “reflect.”
 - **Interaction:** Silver (draw) · Move (everything else). Edit and Place were merged. In Move, pick order is rotate handle → silver stroke → glass, so thin strokes stay grabbable next to or over the glass. Clicking empty canvas deselects. Shortcuts: `D`/`S` Silver, `M` (also `E`/`P`) Move, ⌫ deletes the selected stroke.
@@ -31,7 +32,8 @@ Out of scope for now: accounts, payments, manufacturing export, photo import, mu
 ## Limitations
 - Single procedural glass shape (not photo-based).
 - Silver is a procedural height-field render, not a true 3D/PBR model — no real HDRI, no inter-reflection with the stone, not fabrication-accurate or exportable for casting.
-- Strokes fuse visually only; each stroke is still a separate object for Move/Delete, so moving one pulls it out of the blob. The settled render can take a moment on very large drawings.
+- Strokes fuse visually only; each stroke is still a separate object for Move/Delete, so moving one pulls it out of the blob.
+- The GPU field is capped at ~3.8M texels and 1.5 texels per CSS px, so very large canvases get a slightly coarser height/shadow field (the silhouette edge stays pixel-sharp).
 - Thin strokes on the bright bench need the dark underbelly/contact shadow to stay readable; very fine Weight can still look soft.
 - No stylus pressure / tilt yet.
 - Strokes render under the glass; no true bezel depth or overlapping metal-over-stone compositing.

@@ -139,6 +139,13 @@
     canvas.style.width = `${width}px`;
     canvas.style.height = `${height}px`;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (silverGL) {
+      try {
+        silverGL.resize(width, height, dpr);
+      } catch (err) {
+        disableGL(err);
+      }
+    }
     markMetalDirty();
 
     // Re-center until the user moves the glass, so full-window resizes stay balanced
@@ -340,11 +347,28 @@
   const SILVER = {
     goo: 0.55, // blur radius relative to stroke weight — higher = stickier, more melting
     threshold: 0.42, // field level where the metal surface sits
-    liveArea: 260000, // max working pixels while drawing / dragging
-    fullArea: 1700000, // max working pixels for the settled render
+    liveArea: 1000000, // max bitmap pixels while drawing / dragging
+    fullArea: 4000000, // max bitmap pixels for the settled render
   };
 
+  // GPU renderer (silver-gl.js). Falls back to the CPU renderer below if unavailable.
+  let silverGL = null;
+  try {
+    silverGL = window.SilverGL ? window.SilverGL.create() : null;
+  } catch (err) {
+    console.warn("[jewl] WebGL silver unavailable, using CPU renderer", err);
+    silverGL = null;
+  }
+
+  function disableGL(err) {
+    console.warn("[jewl] WebGL silver failed, using CPU renderer", err);
+    silverGL = null;
+    metal.builtVersion = -1;
+    metal.glRect = null;
+  }
+
   const metal = {
+    glRect: null,
     canvas: document.createElement("canvas"),
     version: 0,
     builtVersion: -1,
@@ -535,14 +559,13 @@
       return;
     }
 
+    // s = bitmap pixels per CSS pixel. Match the screen's device pixel ratio so
+    // the silver is drawn 1:1 with the display; only drop resolution when the
+    // bounding box would exceed the pixel budget.
     const area = (x1 - x0) * (y1 - y0);
-    let s;
-    if (quality === "live") {
-      s = Math.min(0.5, Math.sqrt(SILVER.liveArea / area));
-    } else {
-      s = Math.min(dpr > 1 ? 1.5 : 1, Math.sqrt(SILVER.fullArea / area));
-    }
-    s = Math.max(0.15, s);
+    const budget = quality === "live" ? SILVER.liveArea : SILVER.fullArea;
+    const devArea = area * dpr * dpr;
+    const s = dpr * Math.min(1, Math.sqrt(budget / devArea));
     const gw = Math.max(2, Math.ceil((x1 - x0) * s));
     const gh = Math.max(2, Math.ceil((y1 - y0) * s));
     const n = gw * gh;
@@ -707,7 +730,36 @@
     metal.builtQuality = quality;
   }
 
+  function drawMetalGL() {
+    if (silverGL.isLost()) {
+      disableGL(new Error("WebGL context lost"));
+      return false;
+    }
+    if (metal.builtVersion !== metal.version) {
+      try {
+        const list = activeStroke ? strokes.concat(activeStroke) : strokes;
+        metal.glRect = silverGL.render(list, SILVER);
+      } catch (err) {
+        disableGL(err);
+        return false;
+      }
+      metal.builtVersion = metal.version;
+    }
+    const r = metal.glRect;
+    if (!r) return true;
+    ctx.save();
+    ctx.imageSmoothingEnabled = false; // 1:1 device pixels
+    ctx.drawImage(silverGL.canvas, r.sx, r.sy, r.sw, r.sh, r.x, r.y, r.w, r.h);
+    ctx.restore();
+    return true;
+  }
+
   function drawMetal(quality) {
+    if (silverGL && drawMetalGL()) {
+      stage.dataset.renderer = "webgl";
+      return;
+    }
+    stage.dataset.renderer = "cpu";
     const stale =
       metal.builtVersion !== metal.version ||
       (quality === "full" && metal.builtQuality !== "full");
