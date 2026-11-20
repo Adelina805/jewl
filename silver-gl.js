@@ -18,8 +18,8 @@
 (() => {
   "use strict";
 
-  const MAX_TEXELS = 3800000; // field texture budget (whole canvas)
-  const MAX_FIELD_SCALE = 1.5; // field texels per CSS px
+  const MAX_TEXELS = 6000000; // field texture budget (whole canvas)
+  const MAX_FIELD_SCALE = 2; // field texels per CSS px
   const PAD = 60; // CSS px the metal may extend beyond the canvas
   const SIGMA_REDUCED = 4.5; // wide blurs are done at a resolution where sigma <= this
 
@@ -180,19 +180,88 @@ void main() {
   o = vec4(best, 0.0, 1.0);
 }`;
 
+  // Cubic B-spline reconstruction (C2 continuous) read straight from texels, so it
+  // works on any float format without needing linear filtering. f is in texel
+  // units (texel i has its centre at i + 0.5); r is the valid rect in texels.
+  const BSPLINE_GLSL = `
+vec4 bsW(float t) {
+  float t2 = t * t;
+  float t3 = t2 * t;
+  return vec4(1.0 - 3.0 * t + 3.0 * t2 - t3,
+              4.0 - 6.0 * t2 + 3.0 * t3,
+              1.0 + 3.0 * t + 3.0 * t2 - 3.0 * t3,
+              t3) / 6.0;
+}
+vec4 bsD(float t) {
+  float t2 = t * t;
+  return vec4(-3.0 + 6.0 * t - 3.0 * t2,
+              -12.0 * t + 9.0 * t2,
+              3.0 + 6.0 * t - 9.0 * t2,
+              3.0 * t2) / 6.0;
+}
+// value (.x) and d/dx, d/dy (.yz) in texel units
+vec3 bsg(sampler2D s, vec2 f, vec2 r) {
+  vec2 p = f - 0.5;
+  vec2 ip = floor(p);
+  vec2 t = p - ip;
+  vec4 wx = bsW(t.x);
+  vec4 wy = bsW(t.y);
+  vec4 dx = bsD(t.x);
+  vec4 dy = bsD(t.y);
+  ivec2 hi = ivec2(r) - 1;
+  ivec2 b = ivec2(ip) - 1;
+  float v = 0.0;
+  float gx = 0.0;
+  float gy = 0.0;
+  for (int j = 0; j < 4; j++) {
+    int yy = clamp(b.y + j, 0, hi.y);
+    float rv = 0.0;
+    float rg = 0.0;
+    for (int i = 0; i < 4; i++) {
+      int xx = clamp(b.x + i, 0, hi.x);
+      float tv = texelFetch(s, ivec2(xx, yy), 0).r;
+      rv += tv * wx[i];
+      rg += tv * dx[i];
+    }
+    v += rv * wy[j];
+    gx += rg * wy[j];
+    gy += rv * dy[j];
+  }
+  return vec3(v, gx, gy);
+}
+float bs(sampler2D s, vec2 f, vec2 r) {
+  vec2 p = f - 0.5;
+  vec2 ip = floor(p);
+  vec2 t = p - ip;
+  vec4 wx = bsW(t.x);
+  vec4 wy = bsW(t.y);
+  ivec2 hi = ivec2(r) - 1;
+  ivec2 b = ivec2(ip) - 1;
+  float v = 0.0;
+  for (int j = 0; j < 4; j++) {
+    int yy = clamp(b.y + j, 0, hi.y);
+    float rv = 0.0;
+    for (int i = 0; i < 4; i++) {
+      int xx = clamp(b.x + i, 0, hi.x);
+      rv += texelFetch(s, ivec2(xx, yy), 0).r * wx[i];
+    }
+    v += rv * wy[j];
+  }
+  return v;
+}
+`;
+
   const HEIGHT_FS = `#version 300 es
 precision highp float;
 uniform sampler2D uComb;
 uniform sampler2D uSeed;
 uniform sampler2D uDome;
 uniform vec2 uDomeRect;
-uniform vec2 uTexSize;
-uniform vec2 uOriginCss;
-uniform vec2 uRectCss;
 uniform vec2 uRect;
 uniform float uRg;
 uniform float uThr;
 out vec4 o;
+${BSPLINE_GLSL}
 void main() {
   ivec2 c = ivec2(gl_FragCoord.xy);
   float F = texelFetch(uComb, c, 0).r;
@@ -201,12 +270,12 @@ void main() {
   float d = s.x < 0.0 ? 1e4 : distance(s, vec2(c));
   float t = clamp(max(d - 0.5, 0.0) / uRg, 0.0, 1.0);
   float u = 1.0 - t;
-  vec2 dp = clamp(gl_FragCoord.xy * (uDomeRect / uRect), vec2(0.5), uDomeRect - 0.5);
-  float A = texture(uDome, dp / uTexSize).r;
-  float pool = A * A;
-  vec2 w = uOriginCss + (gl_FragCoord.xy / uRect) * uRectCss;
-  float wob = sin(w.x * 0.034 + sin(w.y * 0.021) * 2.1) * cos(w.y * 0.029 + cos(w.x * 0.017) * 1.7);
-  float h = uRg * sqrt(max(0.0, 1.0 - u * u)) + uRg * pool * (1.4 + 0.55 * wob);
+  // C2 upsample of the low-res dome so large masses stay perfectly smooth
+  float A = clamp(bs(uDome, gl_FragCoord.xy * (uDomeRect / uRect), uDomeRect), 0.0, 1.0);
+  float pool = smoothstep(0.0, 1.0, A);
+  // rounded tube profile (tiny epsilon keeps the slope finite at the rim) + smooth pillow dome
+  float tube = sqrt(max(0.0, 1.0 - u * u) + 1e-3) - 0.031622777;
+  float h = uRg * tube + uRg * pool * 1.4;
   o = vec4(h, 0.0, 0.0, 1.0);
 }`;
 
@@ -218,7 +287,6 @@ uniform sampler2D uS;
 uniform vec2 uVp;       // viewport size (device px)
 uniform vec2 uField;    // field rect (texels)
 uniform vec2 uShRect;   // shadow rect (texels)
-uniform vec2 uTexSize;
 uniform float uThr;
 uniform float uFs;      // field texels per CSS px
 uniform float uShScale;
@@ -241,36 +309,36 @@ float envLum(vec3 r) {
   return pow(clamp(v, 0.0, 1.0), 1.12);
 }
 
-vec2 fq(vec2 f, vec2 r) {
-  return clamp(f, vec2(0.5), r - 0.5) / uTexSize;
-}
-float hAt(vec2 f) {
-  return texture(uH, fq(f, uField)).r;
-}
+${BSPLINE_GLSL}
 float sAt(vec2 f) {
-  return texture(uS, fq(f * (uShRect / uField), uShRect)).r;
+  return bs(uS, f * (uShRect / uField), uShRect);
 }
 
 void main() {
   vec2 uv = vec2(gl_FragCoord.x / uVp.x, 1.0 - gl_FragCoord.y / uVp.y);
   vec2 f = uv * uField;
 
-  float F = texture(uComb, fq(f, uField)).r;
+  float F = bs(uComb, f, uField);
   float fw = max(fwidth(F), 1e-5);
   float c = clamp((F - uThr) / fw + 0.5, 0.0, 1.0);
 
-  vec2 o1 = vec2(1.0, 3.0) * uShScale * uFs;
-  vec2 o2 = vec2(0.3, 0.9) * uShScale * uFs;
-  float aS = 1.0 - (1.0 - 0.3 * sAt(f - o1)) * (1.0 - 0.3 * sAt(f - o2));
-  aS *= 1.0 - c;
+  float aS = 0.0;
+  if (c < 0.999) {
+    vec2 o1 = vec2(1.0, 3.0) * uShScale * uFs;
+    vec2 o2 = vec2(0.3, 0.9) * uShScale * uFs;
+    aS = 1.0 - (1.0 - 0.3 * sAt(f - o1)) * (1.0 - 0.3 * sAt(f - o2));
+    aS *= 1.0 - c;
+  }
 
   vec3 shadowCol = vec3(28.0, 36.0, 44.0) / 255.0;
   vec3 rgb = shadowCol * aS;
   float alpha = aS;
 
   if (c > 0.002) {
-    float gx = (hAt(f + vec2(1.0, 0.0)) - hAt(f - vec2(1.0, 0.0))) * 0.5;
-    float gy = (hAt(f + vec2(0.0, 1.0)) - hAt(f - vec2(0.0, 1.0))) * 0.5;
+    // height and its gradient from one C2 cubic reconstruction: continuous normals
+    vec3 hg = bsg(uH, f, uField);
+    float gx = hg.y;
+    float gy = hg.z;
     float nz = inversesqrt(gx * gx + gy * gy + 1.0);
     float nx = -gx * nz;
     float ny = -gy * nz;
@@ -355,6 +423,10 @@ void main() {
     // ---- programs
     function compile(type, src) {
       const sh = gl.createShader(type);
+      if (type === gl.FRAGMENT_SHADER) {
+        // fragment samplers default to lowp, which can truncate float lookups on some GPUs
+        src = src.replace("precision highp float;", "precision highp float;\nprecision highp int;\nprecision highp sampler2D;");
+      }
       gl.shaderSource(sh, src);
       gl.compileShader(sh);
       if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
@@ -479,15 +551,18 @@ void main() {
       tex = {
         mask: [0, 1, 2].map(() => makeTex(gl.R8, gl.NEAREST)),
         field: [0, 1, 2].map(() => makeTex(gl.R16F, gl.LINEAR)), // later reused: dome, shadow, height
-        tmpA: makeTex(gl.R16F, gl.NEAREST),
-        tmpB: makeTex(gl.R16F, gl.NEAREST),
+        // full 32-bit floats: the height map feeds the surface normals, and half floats
+        // would quantize it into visible terraces
+        tmpA: makeTex(gl.R32F, gl.NEAREST),
+        tmpB: makeTex(gl.R32F, gl.NEAREST),
+        height: makeTex(gl.R32F, gl.NEAREST),
         comb: makeTex(gl.RG16F, gl.LINEAR),
         seedA: makeTex(gl.RG32F, gl.NEAREST),
         seedB: makeTex(gl.RG32F, gl.NEAREST),
       };
       // Verify every render-target format actually works on this GPU
       gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-      const check = [tex.mask[0], tex.field[0], tex.comb, tex.seedA];
+      const check = [tex.mask[0], tex.field[0], tex.comb, tex.seedA, tex.tmpA, tex.height];
       for (const t of check) {
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
         if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
@@ -741,23 +816,21 @@ void main() {
       gl.uniform1i(progs.height.u("uSeed"), 1);
       gl.uniform1i(progs.height.u("uDome"), 2);
       gl.uniform2f(progs.height.u("uDomeRect"), dome.w, dome.h);
-      gl.uniform2f(progs.height.u("uTexSize"), capW, capH);
-      gl.uniform2f(progs.height.u("uOriginCss"), x0, y0);
-      gl.uniform2f(progs.height.u("uRectCss"), rectW, rectH);
       gl.uniform2f(progs.height.u("uRect"), gw, gh);
       gl.uniform1f(progs.height.u("uRg"), Rg);
       gl.uniform1f(progs.height.u("uThr"), thr);
       fullscreen();
-      // take the stair-steps out of the distance field
-      blur(tex.tmpA, tex.tmpB, gw, gh, 1, 0, 1.4);
-      blur(tex.tmpB, tex.field[2], gw, gh, 0, 1, 1.4);
+      // take the stair-steps and medial-axis creases out of the distance field
+      const hSigma = Math.min(4, Math.max(1.4, 0.12 * Rg));
+      blur(tex.tmpA, tex.tmpB, gw, gh, 1, 0, hSigma);
+      blur(tex.tmpB, tex.height, gw, gh, 0, 1, hSigma);
 
       // --- 7. final shading at full device resolution
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, vw, vh);
       gl.useProgram(progs.final.p);
       bindTex(0, tex.comb);
-      bindTex(1, tex.field[2]);
+      bindTex(1, tex.height);
       bindTex(2, tex.field[1]);
       gl.uniform1i(progs.final.u("uComb"), 0);
       gl.uniform1i(progs.final.u("uH"), 1);
@@ -765,7 +838,6 @@ void main() {
       gl.uniform2f(progs.final.u("uVp"), vw, vh);
       gl.uniform2f(progs.final.u("uField"), gw, gh);
       gl.uniform2f(progs.final.u("uShRect"), shadow.w, shadow.h);
-      gl.uniform2f(progs.final.u("uTexSize"), capW, capH);
       gl.uniform1f(progs.final.u("uThr"), thr);
       gl.uniform1f(progs.final.u("uFs"), fs);
       gl.uniform1f(progs.final.u("uShScale"), Math.min(2, Math.max(0.6, (meanW * 0.5) / 7)));
