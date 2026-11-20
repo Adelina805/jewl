@@ -150,6 +150,10 @@
     }
     glassLayer.canvas.width = Math.floor(width * dpr);
     glassLayer.canvas.height = Math.floor(height * dpr);
+    glassLayer.dist.width = glassLayer.canvas.width;
+    glassLayer.dist.height = glassLayer.canvas.height;
+    metal.layer.width = glassLayer.canvas.width;
+    metal.layer.height = glassLayer.canvas.height;
     markAllDirty();
 
     render();
@@ -337,11 +341,13 @@
     console.warn("[jewl] WebGL silver failed, using CPU renderer", err);
     silverGL = null;
     metal.builtVersion = -1;
-    metal.glRect = null;
+    metal.glEmpty = true;
   }
 
   const metal = {
-    glRect: null,
+    glEmpty: true,
+    // device-pixel cache of the GPU silver: molded strokes, then on-top strokes over them
+    layer: document.createElement("canvas"),
     canvas: document.createElement("canvas"),
     version: 0,
     builtVersion: -1,
@@ -353,6 +359,7 @@
     h: 0,
   };
   const metalCtx = metal.canvas.getContext("2d");
+  const metalLayerCtx = metal.layer.getContext("2d");
   const maskCanvas = document.createElement("canvas");
   const maskCtx = maskCanvas.getContext("2d", { willReadFrequently: true });
 
@@ -367,8 +374,14 @@
   }
 
   function markDirty(kind) {
-    if (kind === "glass") glassLayer.version++;
-    else metal.version++;
+    if (kind === "glass") {
+      glassLayer.version++;
+      // the silver reads the glass layer to wrap it, so it must redraw too (only matters
+      // when there is silver on the canvas)
+      if (strokes.some((s) => s.kind === "silver")) metal.version++;
+    } else {
+      metal.version++;
+    }
   }
 
   function markAllDirty() {
@@ -389,7 +402,23 @@
   const GLASS = {
     goo: 0.65, // a bit stickier than silver so painted pieces stay smooth and pebble-like
     threshold: 0.42,
-    domeK: 0.9, // gentler dome than metal: sea glass is flatter and more matte
+    domeK: 0.4, // nearly flat top: glass sits flush with the metal instead of domed above it
+  };
+
+  // Where silver touches or crosses glass, the glass acts as a solid obstacle for the liquid
+  // metal (silver-gl.js): metal is pushed out of the stone and piles up along its edge, wets
+  // along the contour, and turns flat and bezel-like next to it. The glass never changes shape.
+  // Silver drawn entirely inside a glass piece is not molded; it sits on top.
+  const WRAP = {
+    lipOverlap: 1.5, // px the metal may overlap the glass edge (a bezel lip)
+    bandWidth: 0.35, // width of the edge band the pushed metal piles into, x silver Weight (3 to 14 px)
+    displace: 1.0, // how much of the pushed-out metal reappears along the edge (1 = all of it)
+    wet: 0.6, // how far metal touching the glass creeps along its edge
+    bevel: 0.8, // slope of the narrow bevel where metal meets glass
+    tintBleed: 0.2, // hint of glass color right at the contact edge (0 to 1)
+    seam: 0.6, // darkness of the thin line where metal meets glass (0 to 1)
+    flattenGlass: 0.9, // hides the glass's frosted, rounded edge next to the metal (0 to 1)
+    flattenWidth: 10, // px of glass edge flattened next to the metal
   };
 
   let glassGL = null;
@@ -408,11 +437,15 @@
 
   const glassLayer = {
     canvas: document.createElement("canvas"),
+    // signed distance to the glass edge (grey, 0.5 = on the edge); read by the silver pass
+    dist: document.createElement("canvas"),
     version: 0,
     builtVersion: -1,
     empty: true,
+    hasDist: false,
   };
   const glassLayerCtx = glassLayer.canvas.getContext("2d");
+  const glassDistCtx = glassLayer.dist.getContext("2d");
 
   function strokesOfKind(kind) {
     const list = strokes.filter((s) => s.kind === kind);
@@ -424,6 +457,13 @@
     const c = glassLayerCtx;
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.clearRect(0, 0, glassLayer.canvas.width, glassLayer.canvas.height);
+    // distance layer starts as "far outside" (black); groups are max-ed in with "lighten"
+    const dc = glassDistCtx;
+    dc.setTransform(1, 0, 0, 1, 0, 0);
+    dc.globalCompositeOperation = "source-over";
+    dc.fillStyle = "#000";
+    dc.fillRect(0, 0, glassLayer.dist.width, glassLayer.dist.height);
+    glassLayer.hasDist = false;
     glassLayer.builtVersion = glassLayer.version;
 
     const list = strokesOfKind("glass");
@@ -467,6 +507,25 @@
             rect.w * dpr,
             rect.h * dpr
           );
+          // same pass again as signed distance to the glass edge, for the silver to read
+          const dr = glassGL.renderDist();
+          if (dr) {
+            dc.imageSmoothingEnabled = false;
+            dc.globalCompositeOperation = "lighten";
+            dc.drawImage(
+              glassGL.canvas,
+              dr.sx,
+              dr.sy,
+              dr.sw,
+              dr.sh,
+              dr.x * dpr,
+              dr.y * dpr,
+              dr.w * dpr,
+              dr.h * dpr
+            );
+            dc.globalCompositeOperation = "source-over";
+            glassLayer.hasDist = true;
+          }
         }
       } else {
         // Simple fallback: flat translucent round-cap strokes
@@ -843,20 +902,87 @@
     if (metal.builtVersion !== metal.version) {
       try {
         const list = strokesOfKind("silver");
-        metal.glRect = silverGL.render(list, SILVER);
+        // glass layer (color + edge distance) lets the glass mold the liquid metal;
+        // drawGlass() has already rebuilt it for this frame, so builtVersion is current
+        const glass =
+          glassGL && !glassLayer.empty && glassLayer.hasDist
+            ? { color: glassLayer.canvas, dist: glassLayer.dist, version: glassLayer.builtVersion }
+            : null;
+        const molded = [];
+        const onTop = [];
+        for (const s of list) (glass && isOnTop(s) ? onTop : molded).push(s);
+
+        const c = metalLayerCtx;
+        c.setTransform(1, 0, 0, 1, 0, 0);
+        c.clearRect(0, 0, metal.layer.width, metal.layer.height);
+        c.imageSmoothingEnabled = false; // 1:1 device pixels
+        metal.glEmpty = true;
+        for (const [group, g] of [
+          [molded, glass],
+          [onTop, null],
+        ]) {
+          if (group.length === 0) continue;
+          const r = silverGL.render(group, { ...SILVER, glass: g, wrap: WRAP });
+          if (!r) continue;
+          c.drawImage(silverGL.canvas, r.sx, r.sy, r.sw, r.sh, r.x * dpr, r.y * dpr, r.w * dpr, r.h * dpr);
+          metal.glEmpty = false;
+        }
       } catch (err) {
         disableGL(err);
         return false;
       }
       metal.builtVersion = metal.version;
     }
-    const r = metal.glRect;
-    if (!r) return true;
+    if (metal.glEmpty) return true;
     ctx.save();
-    ctx.imageSmoothingEnabled = false; // 1:1 device pixels
-    ctx.drawImage(silverGL.canvas, r.sx, r.sy, r.sw, r.sh, r.x, r.y, r.w, r.h);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(metal.layer, 0, 0);
     ctx.restore();
     return true;
+  }
+
+  // Low-res CPU copy of the coarse glass edge distance, read back once per glass build, to
+  // tell which silver strokes lie entirely inside a glass piece (those sit on top, unmolded).
+  const GLASS_PROBE_SCALE = 0.25;
+  const glassProbe = { canvas: document.createElement("canvas"), version: -1, data: null, w: 0, h: 0, s: 1 };
+  const glassProbeCtx = glassProbe.canvas.getContext("2d", { willReadFrequently: true });
+
+  /** Signed distance (CSS px, + inside, about +-64) from p to the nearest glass edge. */
+  function glassSdAt(x, y) {
+    const gp = glassProbe;
+    if (gp.version !== glassLayer.builtVersion) {
+      gp.w = Math.max(1, Math.round(glassLayer.dist.width * GLASS_PROBE_SCALE));
+      gp.h = Math.max(1, Math.round(glassLayer.dist.height * GLASS_PROBE_SCALE));
+      gp.canvas.width = gp.w;
+      gp.canvas.height = gp.h;
+      glassProbeCtx.imageSmoothingEnabled = true;
+      glassProbeCtx.drawImage(glassLayer.dist, 0, 0, gp.w, gp.h);
+      gp.data = glassProbeCtx.getImageData(0, 0, gp.w, gp.h).data;
+      gp.s = gp.w / Math.max(1, width);
+      gp.version = glassLayer.builtVersion;
+    }
+    const px = Math.round(x * gp.s);
+    const py = Math.round(y * gp.s);
+    if (px < 0 || py < 0 || px >= gp.w || py >= gp.h) return -64;
+    return (gp.data[(py * gp.w + px) * 4 + 1] / 255 - 0.5) * 128;
+  }
+
+  function isOnTop(s) {
+    const pts = s.points;
+    const a = pts[0];
+    const b = pts[pts.length - 1];
+    const key = `${glassLayer.builtVersion}|${pts.length}|${a.x}|${a.y}|${b.x}|${b.y}|${s.width}`;
+    if (s._onTop && s._onTop.key === key) return s._onTop.v;
+    const need = s.width / 2 + WRAP.lipOverlap + 1;
+    let v = true;
+    for (const p of pts) {
+      if (glassSdAt(p.x, p.y) <= need) {
+        v = false;
+        break;
+      }
+    }
+    s._onTop = { key, v };
+    return v;
   }
 
   function drawMetal(quality) {

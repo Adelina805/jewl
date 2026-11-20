@@ -26,6 +26,9 @@
   const MAX_FIELD_SCALE = 2; // field texels per CSS px
   const PAD = 60; // CSS px the metal may extend beyond the canvas
   const SIGMA_REDUCED = 4.5; // wide blurs are done at a resolution where sigma <= this
+  const DIST_RANGE = 16; // CSS px: fine glass edge distance is stored in 8 bits over +-this range
+  const DIST_COARSE = 64; // CSS px: coarse glass edge distance range (pushing metal out)
+  const MOLD_REACH = 60; // CSS px: how far inside the glass metal is pushed back out from
 
   // ---------------------------------------------------------------- shaders --
   const FULLSCREEN_VS = `#version 300 es
@@ -128,35 +131,153 @@ void main() {
   o = vec4(F, c, 0.0, 1.0);
 }`;
 
-  // Resample the cover channel into a smaller rect (4-tap box) for wide blurs.
-  const COPY_FS = `#version 300 es
+  // Resample the cover channel into a smaller rect (4-tap box) for wide blurs. With uUnion
+  // the glass counts as cover too, so the dome treats metal + stone as one level mass.
+  const copyFS = () => `#version 300 es
 precision highp float;
 uniform sampler2D uSrc;
 uniform vec2 uSrcRect;
 uniform vec2 uDstRect;
 uniform vec2 uTexSize;
+uniform float uUnion;
 out vec4 o;
+${GLASS_FIELD_GLSL}
+${FIELD_CSS_GLSL}
+float tap(vec2 p) {
+  float s = texture(uSrc, clamp(p, vec2(0.5), uSrcRect - 0.5) / uTexSize).g;
+  if (uUnion > 0.5) s = max(s, gCov(gSdB(uOriginCss + p / uSrcRect * uRectCss)));
+  return s;
+}
 void main() {
   vec2 u = gl_FragCoord.xy / uDstRect;
   vec2 p = u * uSrcRect;
   vec2 q = 0.25 * uSrcRect / uDstRect;
-  float s = 0.0;
-  s += texture(uSrc, clamp(p + vec2(-q.x, -q.y), vec2(0.5), uSrcRect - 0.5) / uTexSize).g;
-  s += texture(uSrc, clamp(p + vec2( q.x, -q.y), vec2(0.5), uSrcRect - 0.5) / uTexSize).g;
-  s += texture(uSrc, clamp(p + vec2(-q.x,  q.y), vec2(0.5), uSrcRect - 0.5) / uTexSize).g;
-  s += texture(uSrc, clamp(p + vec2( q.x,  q.y), vec2(0.5), uSrcRect - 0.5) / uTexSize).g;
+  float s = tap(p + vec2(-q.x, -q.y)) + tap(p + vec2(q.x, -q.y)) +
+            tap(p + vec2(-q.x, q.y)) + tap(p + vec2(q.x, q.y));
   o = vec4(s * 0.25, 0.0, 0.0, 1.0);
 }`;
 
+  // Glass edge distance as seen from the silver context. The texture is canvas-sized:
+  // R = fine signed distance (+-DIST_RANGE CSS px), G = coarse (+-DIST_COARSE), + inside.
+  const GLASS_FIELD_GLSL = `
+uniform sampler2D uGD;
+uniform float uGlassOn;
+uniform vec2 uCanvasCss;
+vec2 gTex(vec2 css) { return textureLod(uGD, css / uCanvasCss, 0.0).rg; }
+float gSd(vec2 css) { return (gTex(css).r - 0.5) * ${(2 * DIST_RANGE).toFixed(1)}; }
+float gSdC(vec2 css) { return (gTex(css).g - 0.5) * ${(2 * DIST_COARSE).toFixed(1)}; }
+// fine where it is in range, coarse beyond
+float gSdB(vec2 css) {
+  vec2 t = gTex(css);
+  float f = (t.r - 0.5) * ${(2 * DIST_RANGE).toFixed(1)};
+  return abs(f) < ${(DIST_RANGE - 1).toFixed(1)} ? f : (t.g - 0.5) * ${(2 * DIST_COARSE).toFixed(1)};
+}
+float gCov(float sd) { return smoothstep(-0.75, 0.75, sd); }
+// unit direction pointing into the glass
+vec2 gDirIn(vec2 css) {
+  float e = 3.0;
+  vec2 g = vec2(gSdC(css + vec2(e, 0.0)) - gSdC(css - vec2(e, 0.0)),
+                gSdC(css + vec2(0.0, e)) - gSdC(css - vec2(0.0, e)));
+  float l = length(g);
+  return l > 1e-4 ? g / l : vec2(0.0);
+}
+`;
+
+  // Field passes map a texel to canvas CSS px through the render rect.
+  const FIELD_CSS_GLSL = `
+uniform vec2 uOriginCss;
+uniform vec2 uRectCss;
+vec2 fieldCss(vec2 rect) { return uOriginCss + gl_FragCoord.xy / rect * uRectCss; }
+`;
+
+  // Glass counts as solid here: texels under the glass are never "outside" seeds, so metal
+  // that meets glass keeps its full height up to the contact instead of rolling down.
   const JFA_INIT_FS = `#version 300 es
 precision highp float;
 uniform sampler2D uComb;
 uniform float uThr;
+uniform vec2 uFieldRect;
 out vec4 o;
+${GLASS_FIELD_GLSL}
+${FIELD_CSS_GLSL}
 void main() {
   ivec2 c = ivec2(gl_FragCoord.xy);
   float F = texelFetch(uComb, c, 0).r;
-  o = F < uThr ? vec4(vec2(c), 0.0, 1.0) : vec4(-100000.0, -100000.0, 0.0, 1.0);
+  bool outside = F < uThr;
+  if (outside && uGlassOn > 0.5 && gSdB(fieldCss(uFieldRect)) > 0.0) outside = false;
+  o = outside ? vec4(vec2(c), 0.0, 1.0) : vec4(-100000.0, -100000.0, 0.0, 1.0);
+}`;
+
+  // Liquid metal meets glass, step 1 (reduced resolution): for texels in the band just outside
+  // the glass edge, walk inward along the glass normal and collect the metal that was drawn
+  // inside the glass and whose nearest edge is this one. Deposit it into the band profile,
+  // so the displaced metal is (roughly) conserved and piles up against the edge.
+  const MOLD_GATHER_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uComb;
+uniform vec2 uOutRect;
+uniform vec2 uField;
+uniform vec2 uTexSize;
+uniform float uLip;
+uniform float uBand;
+uniform float uReach;
+out vec4 o;
+${GLASS_FIELD_GLSL}
+${FIELD_CSS_GLSL}
+float Fat(vec2 css) {
+  vec2 p = clamp((css - uOriginCss) / uRectCss * uField, vec2(0.5), uField - 0.5);
+  return texture(uComb, p / uTexSize).r;
+}
+void main() {
+  vec2 css = fieldCss(uOutRect);
+  float sd = gSdB(css);
+  float x = (sd - (uLip - 0.4 * uBand)) / (0.6 * uBand);
+  float b = sd > uLip + 0.75 ? 0.0 : exp(-x * x);
+  if (b < 0.01) { o = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  vec2 dir = gDirIn(css);
+  float t0 = max(uLip - sd, 0.0);
+  float dt = uReach / 24.0;
+  float M = 0.0;
+  for (int i = 0; i < 24; i++) {
+    float t = t0 + (float(i) + 0.5) * dt;
+    vec2 p = css + dir * t;
+    float s = gSdB(p);
+    float inside = smoothstep(uLip - 0.75, uLip + 0.75, s);
+    // only metal whose nearest glass edge is this one (no double counting across the stone)
+    float mine = smoothstep(-3.0, -1.0, s - (sd + t));
+    M += Fat(p) * inside * mine;
+  }
+  M *= dt;
+  o = vec4(M * b / (1.0635 * uBand), 0.0, 0.0, 1.0);
+}`;
+
+  // Step 2 (full field resolution): metal cannot enter the glass beyond the lip; the spread
+  // deposit is added back along the edge, and metal touching the edge wets along it.
+  const moldCombineFS = () => `#version 300 es
+precision highp float;
+uniform sampler2D uComb;
+uniform sampler2D uDep;
+uniform vec2 uDepRect;
+uniform vec2 uField;
+uniform float uThr;
+uniform float uLip;
+uniform float uBand;
+uniform float uWet;
+uniform float uDisplace;
+out vec4 o;
+${GLASS_FIELD_GLSL}
+${FIELD_CSS_GLSL}
+${BSPLINE_GLSL}
+void main() {
+  ivec2 c = ivec2(gl_FragCoord.xy);
+  float F = texelFetch(uComb, c, 0).r;
+  float sd = gSdB(fieldCss(uField));
+  float allowed = 1.0 - smoothstep(uLip - 0.75, uLip + 0.75, sd);
+  float dep = max(bs(uDep, gl_FragCoord.xy * (uDepRect / uField), uDepRect), 0.0) * uDisplace;
+  float x = (sd - (uLip - 0.4 * uBand)) / (0.6 * uBand);
+  float b = exp(-x * x);
+  float Fn = min((F + dep + uWet * F * b) * allowed, 4.0);
+  o = vec4(Fn, smoothstep(uThr - 0.05, uThr + 0.05, Fn), 0.0, 1.0);
 }`;
 
   const JFA_STEP_FS = `#version 300 es
@@ -265,15 +386,22 @@ uniform vec2 uRect;
 uniform float uRg;
 uniform float uThr;
 uniform float uDomeK;
+uniform float uFlatR;   // CSS px: how far from the glass the metal flattens
 out vec4 o;
 ${BSPLINE_GLSL}
+${GLASS_FIELD_GLSL}
+${FIELD_CSS_GLSL}
 void main() {
   ivec2 c = ivec2(gl_FragCoord.xy);
   float F = texelFetch(uComb, c, 0).r;
   if (F < uThr) { o = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  // near glass the metal becomes a flat, bezel-like strip so it sits level with the stone
+  float near = 0.0;
+  if (uGlassOn > 0.5) near = 1.0 - smoothstep(0.0, uFlatR, -gSdC(fieldCss(uRect)));
+  float rg = uRg * mix(1.0, 0.35, near);
   vec2 s = texelFetch(uSeed, c, 0).xy;
   float d = s.x < 0.0 ? 1e4 : distance(s, vec2(c));
-  float t = clamp(max(d - 0.5, 0.0) / uRg, 0.0, 1.0);
+  float t = clamp(max(d - 0.5, 0.0) / rg, 0.0, 1.0);
   float u = 1.0 - t;
   // C2 upsample of the low-res dome so large masses stay perfectly smooth
   float A = clamp(bs(uDome, gl_FragCoord.xy * (uDomeRect / uRect), uDomeRect), 0.0, 1.0);
@@ -287,20 +415,102 @@ void main() {
   // The final pass is shared; each material supplies extra GLSL (uniforms/functions,
   // including thrAt(), the field level of the surface edge) and a shading block that
   // sets premultiplied `rgb` and `alpha` for texels inside the surface.
-  const SILVER_EXTRA = `
-float thrAt(vec2 f) { return uThr; }
+  // Hooks every material provides (the shared final pass calls them):
+  //   shadowKeep(css)                  how much of the bench drop shadow survives at this pixel
+  //   adjustGrad(hg, css, se, ng)      bends the height gradient (metal draping over the glass)
+  //   outsideShade(...)                extra shading just outside the surface edge
+  // se is the signed distance (CSS px, + inside) from the pixel to this material's edge, and
+  // ng the unit direction pointing into the surface. css is the pixel in canvas CSS px.
+  const NO_HOOKS = `
+float shadowKeep(vec2 css) { return 1.0; }
+vec3 adjustGrad(vec3 hg, vec2 css, float se, vec2 ng) { return hg; }
+void outsideShade(inout vec3 rgb, inout float alpha, float aS, float se, float c, vec2 css, vec3 shadowCol) {}
 `;
 
+  // Silver reads the finished glass layer (colour + signed edge distance, both canvas-sized
+  // textures uploaded from 2D canvases). The mold passes have already shaped the metal around
+  // the glass; here it only gets a thin bevel and seam at the contact, and the glass right
+  // next to the metal is flattened so the two read as one level.
+  const SILVER_EXTRA = `
+uniform sampler2D uGC;      // glass colour layer (unpremultiplied RGBA)
+uniform float uTint;        // glass colour picked up right at the contact edge
+uniform float uSeam;
+uniform float uBevel;       // slope of the narrow bevel where metal meets glass
+uniform float uBevW;        // CSS px
+uniform float uFlatG;       // how much of the glass's frosted edge is hidden next to metal
+uniform float uFlatW;       // CSS px
+${GLASS_FIELD_GLSL}
+
+float thrAt(vec2 f) { return uThr; }
+
+// 1 when the nearest metal edge to this pixel is up against glass
+float contactAt(vec2 css, float se, vec2 ng) {
+  return gCov(gSd(css - ng * (max(se, 0.0) + 1.0)));
+}
+
+float shadowKeep(vec2 css) {
+  if (uGlassOn < 0.5) return 1.0;
+  return 1.0 - gCov(gSd(css));
+}
+
+// Narrow bevel along the contact: the surface tips toward the glass over the last px.
+vec3 adjustGrad(vec3 hg, vec2 css, float se, vec2 ng) {
+  if (uGlassOn < 0.5 || se < 0.0 || se > uBevW * 1.5) return hg;
+  float k = contactAt(css, se, ng);
+  if (k < 0.002) return hg;
+  float slope = uBevel * k * (1.0 - smoothstep(0.0, uBevW, se));
+  return vec3(hg.x, hg.y + ng.x * slope, hg.z + ng.y * slope);
+}
+
+// Thin dark seam and a hint of glass colour, only within ~2 px of the contact. The metal
+// itself stays opaque chrome.
+vec3 wrapChrome(vec3 chrome, float se, vec2 css, vec2 ng) {
+  if (uGlassOn < 0.5 || se > 3.0) return chrome;
+  float k = contactAt(css, se, ng);
+  if (k < 0.002) return chrome;
+  vec4 gcol = textureLod(uGC, (css - ng * (max(se, 0.0) + 3.0)) / uCanvasCss, 0.0);
+  float amt = uTint * k * gcol.a * (1.0 - smoothstep(0.0, 2.0, se));
+  chrome = mix(chrome, chrome * 0.6 + gcol.rgb * 0.4, amt);
+  chrome *= 1.0 - uSeam * k * (1.0 - smoothstep(0.0, 1.1, se));
+  return chrome;
+}
+
+// Glass side of the contact: hide the glass's rounded, frosted edge right next to the metal
+// by painting the glass colour from further inside (over an approximate bench colour), then
+// a thin seam line. All contributions are weighted by (1 - c), the part of the pixel that is
+// not metal.
+void outsideShade(inout vec3 rgb, inout float alpha, float aS, float se, float c, vec2 css, vec3 shadowCol) {
+  if (uGlassOn < 0.5) return;
+  float gc = gCov(gSd(css));
+  if (gc < 0.002) return;
+  float ce = max(-se, 0.0);
+  if (ce > uFlatW) return;
+  float w = 1.0 - c;
+  vec4 gcol = textureLod(uGC, (css + gDirIn(css) * uFlatW * 1.2) / uCanvasCss, 0.0);
+  vec3 bench = vec3(0.93, 0.95, 0.95);
+  vec3 inner = gcol.rgb * gcol.a + bench * (1.0 - gcol.a);
+  float a = uFlatG * gc * (1.0 - smoothstep(0.5 * uFlatW, uFlatW, ce)) * w;
+  rgb = inner * a + rgb * (1.0 - a);
+  alpha = a + alpha * (1.0 - a);
+  float s = uSeam * 0.7 * gc * (1.0 - smoothstep(0.2, 1.3, ce)) * w;
+  rgb = shadowCol * s + rgb * (1.0 - s);
+  alpha = s + alpha * (1.0 - s);
+}
+`;
+
+  // rgb / alpha arrive holding the outside part of the pixel (shadow, contact shading), already
+  // weighted by (1 - c); the opaque chrome fills the rest.
   const SILVER_SHADE = `
     float v = envLum(vec3(2.0 * nz * nx, 2.0 * nz * ny, 2.0 * nz * nz - 1.0));
     vec3 chrome = min(vec3(18.0, 21.0, 28.0) / 255.0 + vec3(238.0, 239.0, 240.0) / 255.0 * v, vec3(1.0));
-    rgb = chrome * c + shadowCol * aS;
-    alpha = c + aS;
+    chrome = wrapChrome(chrome, se, css, ng);
+    rgb = chrome * c + rgb;
+    alpha = c + alpha;
 `;
 
   // Frosted, translucent sea glass: tinted body that deepens with thickness, a lighter
   // frosted rim, broad matte highlights, fine grain, and a gently wobbling edge.
-  const GLASS_EXTRA = `
+  const GLASS_NOISE = `
 uniform float uHs;        // height scale (texels): the tube radius
 uniform vec3 uTintLight;
 uniform vec3 uTintDeep;
@@ -322,10 +532,12 @@ float thrAt(vec2 f) {
   return uThr + (n - 0.5) * 0.08;
 }
 `;
+  const GLASS_EXTRA = GLASS_NOISE + NO_HOOKS;
 
   const GLASS_SHADE = `
     float tubeT = clamp(hg.x / max(uHs, 1.0), 0.0, 1.0);
-    float depth = clamp(hg.x / (max(uHs, 1.0) * 2.2), 0.0, 1.0);
+    // the glass dome is flat (flush with the metal), so the plateau is ~1.4 tube radii tall
+    float depth = clamp(hg.x / (max(uHs, 1.0) * 1.6), 0.0, 1.0);
     float frost = 1.0 - smoothstep(0.0, 0.75, tubeT);
     vec3 n = vec3(nx, ny, nz);
     vec3 L = normalize(vec3(-0.5, -0.62, 0.6));
@@ -357,6 +569,8 @@ uniform vec2 uShRect;   // shadow rect (texels)
 uniform float uThr;
 uniform float uFs;      // field texels per CSS px
 uniform float uShScale;
+uniform vec2 uOriginCss; // CSS px position of this render rect on the canvas
+uniform vec2 uRectCss;   // CSS px size of this render rect
 out vec4 fragColor;
 
 const vec3 ENV_KEY   = normalize(vec3(-0.5, -0.62, 0.6));
@@ -384,10 +598,18 @@ ${extra}
 void main() {
   vec2 uv = vec2(gl_FragCoord.x / uVp.x, 1.0 - gl_FragCoord.y / uVp.y);
   vec2 f = uv * uField;
+  vec2 css = uOriginCss + uv * uRectCss;
 
-  float F = bs(uComb, f, uField);
+  vec3 Fg = bsg(uComb, f, uField);
+  float F = Fg.x;
+  float thr = thrAt(f);
   float fw = max(fwidth(F), 1e-5);
-  float c = clamp((F - thrAt(f)) / fw + 0.5, 0.0, 1.0);
+  float c = clamp((F - thr) / fw + 0.5, 0.0, 1.0);
+  // first-order signed distance to this material's edge (CSS px, + inside) and the
+  // direction into the surface; only the contact effects use them
+  float fgl = length(Fg.yz);
+  float se = clamp((F - thr) / max(fgl, 1e-4) / uFs, -64.0, 64.0);
+  vec2 ng = fgl > 1e-4 ? Fg.yz / fgl : vec2(0.0);
 
   float aS = 0.0;
   if (c < 0.999) {
@@ -395,15 +617,17 @@ void main() {
     vec2 o2 = vec2(0.3, 0.9) * uShScale * uFs;
     aS = 1.0 - (1.0 - 0.3 * sAt(f - o1)) * (1.0 - 0.3 * sAt(f - o2));
     aS *= 1.0 - c;
+    aS *= shadowKeep(css);
   }
 
   vec3 shadowCol = vec3(28.0, 36.0, 44.0) / 255.0;
   vec3 rgb = shadowCol * aS;
   float alpha = aS;
+  if (c < 0.999) outsideShade(rgb, alpha, aS, se, c, css, shadowCol);
 
   if (c > 0.002) {
     // height and its gradient from one C2 cubic reconstruction: continuous normals
-    vec3 hg = bsg(uH, f, uField);
+    vec3 hg = adjustGrad(bsg(uH, f, uField), css, se, ng);
     float gx = hg.y;
     float gy = hg.z;
     float nz = inversesqrt(gx * gx + gy * gy + 1.0);
@@ -418,6 +642,35 @@ void main() {
     silver: finalFS(SILVER_EXTRA, SILVER_SHADE),
     glass: finalFS(GLASS_EXTRA, GLASS_SHADE),
   };
+
+  // Glass only: the signed distance to the (wobbling) glass edge for the silver pass to read.
+  // R = fine (+-DIST_RANGE CSS px), G = coarse (+-DIST_COARSE); 0.5 is the edge, inside is
+  // above. Near the edge it is a first-order estimate from the field; deeper inside, where the
+  // field flattens out, the jump-flood distance is used instead.
+  const GLASS_DIST_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uComb;
+uniform sampler2D uSeed;
+uniform vec2 uVp;
+uniform vec2 uField;
+uniform float uThr;
+uniform float uFs;
+out vec4 fragColor;
+${BSPLINE_GLSL}
+${GLASS_NOISE}
+void main() {
+  vec2 uv = vec2(gl_FragCoord.x / uVp.x, 1.0 - gl_FragCoord.y / uVp.y);
+  vec2 f = uv * uField;
+  vec3 Fg = bsg(uComb, f, uField);
+  float sd = (Fg.x - thrAt(f)) / max(length(Fg.yz), 1e-4) / uFs;
+  if (sd > 6.0) {
+    vec2 s = texelFetch(uSeed, ivec2(f), 0).xy;
+    if (s.x >= 0.0) sd = max(6.0, distance(s, floor(f)) / uFs);
+  }
+  float fine = clamp(0.5 + sd / ${(2 * DIST_RANGE).toFixed(1)}, 0.0, 1.0);
+  float coarse = clamp(0.5 + sd / ${(2 * DIST_COARSE).toFixed(1)}, 0.0, 1.0);
+  fragColor = vec4(fine, coarse, 0.0, 1.0);
+}`;
 
   // ---------------------------------------------------------------- helpers --
   function widthBucket(w) {
@@ -528,12 +781,17 @@ void main() {
         mask: program(MASK_VS, MASK_FS),
         blur: program(FULLSCREEN_VS, BLUR_FS),
         combine: program(FULLSCREEN_VS, COMBINE_FS),
-        copy: program(FULLSCREEN_VS, COPY_FS),
+        copy: program(FULLSCREEN_VS, copyFS()),
         jfaInit: program(FULLSCREEN_VS, JFA_INIT_FS),
         jfaStep: program(FULLSCREEN_VS, JFA_STEP_FS),
         height: program(FULLSCREEN_VS, HEIGHT_FS),
         final: program(FULLSCREEN_VS, FINAL_FS[material]),
       };
+      if (material === "glass") progs.dist = program(FULLSCREEN_VS, GLASS_DIST_FS);
+      if (material === "silver") {
+        progs.moldGather = program(FULLSCREEN_VS, MOLD_GATHER_FS);
+        progs.moldCombine = program(FULLSCREEN_VS, moldCombineFS());
+      }
     } catch (err) {
       console.warn("[silver-gl]", err);
       return null;
@@ -586,6 +844,7 @@ void main() {
     }
 
     function freeTextures() {
+      lastPass = null;
       if (!tex) return;
       for (const k of Object.keys(tex)) {
         const v = tex[k];
@@ -627,6 +886,7 @@ void main() {
         tmpB: makeTex(gl.R32F, gl.NEAREST),
         height: makeTex(gl.R32F, gl.NEAREST),
         comb: makeTex(gl.RG16F, gl.LINEAR),
+        comb2: makeTex(gl.RG16F, gl.LINEAR), // molded field (swapped with comb)
         seedA: makeTex(gl.RG32F, gl.NEAREST),
         seedB: makeTex(gl.RG32F, gl.NEAREST),
       };
@@ -640,6 +900,44 @@ void main() {
         }
       }
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    // ---- glass layer textures (silver only): colour + signed edge distance, uploaded from
+    // the canvas-sized 2D canvases the app composites the glass into
+    let lastPass = null;
+    let glassTex = null;
+    let glassVer = null;
+    let glassSize = "";
+    // uploads use a scratch unit so they never disturb the bindings of a pass in progress
+    const SCRATCH_UNIT = 7;
+    function makeGlassTex() {
+      const t = gl.createTexture();
+      gl.activeTexture(gl.TEXTURE0 + SCRATCH_UNIT);
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));
+      return t;
+    }
+    /** Make sure the glass textures match opts.glass; returns false when there is no glass. */
+    function syncGlass(g) {
+      if (!g || !g.color || !g.dist || !g.color.width || !g.color.height) return false;
+      if (!glassTex) glassTex = [makeGlassTex(), makeGlassTex()];
+      const size = `${g.color.width}x${g.color.height}`;
+      if (glassVer !== g.version || glassSize !== size) {
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        gl.activeTexture(gl.TEXTURE0 + SCRATCH_UNIT);
+        [g.color, g.dist].forEach((src, i) => {
+          gl.bindTexture(gl.TEXTURE_2D, glassTex[i]);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+        });
+        glassVer = g.version;
+        glassSize = size;
+      }
+      return true;
     }
 
     // ---- pass helpers
@@ -669,7 +967,7 @@ void main() {
       fullscreen();
     }
     /** cover channel of the combined field -> blurred single channel at reduced size */
-    function coverBlur(dst, gw, gh, sigma) {
+    function coverBlur(dst, gw, gh, sigma, union = null) {
       const r = Math.min(1, SIGMA_REDUCED / sigma);
       const dw = Math.max(2, Math.ceil(gw * r));
       const dh = Math.max(2, Math.ceil(gh * r));
@@ -678,6 +976,8 @@ void main() {
       gl.useProgram(progs.copy.p);
       bindTex(0, tex.comb);
       gl.uniform1i(progs.copy.u("uSrc"), 0);
+      gl.uniform1f(progs.copy.u("uUnion"), union ? 1 : 0);
+      if (union) union(progs.copy);
       gl.uniform2f(progs.copy.u("uSrcRect"), gw, gh);
       gl.uniform2f(progs.copy.u("uDstRect"), dw, dh);
       gl.uniform2f(progs.copy.u("uTexSize"), capW, capH);
@@ -694,6 +994,7 @@ void main() {
      * @returns {null | {x:number,y:number,w:number,h:number,sx:number,sy:number,sw:number,sh:number}}
      */
     function render(strokes, opts) {
+      lastPass = null;
       if (lost || !tex || strokes.length === 0) return null;
 
       const goo = opts.goo;
@@ -725,7 +1026,12 @@ void main() {
         }
       }
       const meanW = sumW / strokes.length;
-      const margin = maxW * 1.1 + 18;
+      const wrap = opts.wrap || {};
+      const knob = (k, d) => (wrap[k] != null ? wrap[k] : d);
+      // silver touching glass: the glass layer molds the metal (see MOLD_* shaders)
+      const hasGlass = material === "silver" && syncGlass(opts.glass);
+      // pushed-out metal can land up to MOLD_REACH px from where it was drawn
+      const margin = maxW * 1.1 + 18 + (hasGlass ? MOLD_REACH : 0);
 
       // Snap the rect to whole device pixels so the final copy is 1:1
       let unit = 1;
@@ -842,9 +1148,71 @@ void main() {
       gl.uniform1f(progs.combine.u("uThr"), thr);
       fullscreen();
 
+      // glass edge distance on unit 4 (colour on 3) for every pass that reads it
+      if (material === "silver") {
+        if (!glassTex) glassTex = [makeGlassTex(), makeGlassTex()];
+        bindTex(3, glassTex[0]);
+        bindTex(4, glassTex[1]);
+      }
+      const glassU = (prog) => {
+        gl.uniform1f(prog.u("uGlassOn"), hasGlass ? 1 : 0);
+        gl.uniform1i(prog.u("uGD"), 4);
+        gl.uniform2f(prog.u("uCanvasCss"), curW, curH);
+        gl.uniform2f(prog.u("uOriginCss"), x0, y0);
+        gl.uniform2f(prog.u("uRectCss"), rectW, rectH);
+      };
+
+      // --- 3b. liquid metal meets glass: push metal out of the stone and pile it on the edge
+      if (hasGlass) {
+        const lip = knob("lipOverlap", 1.5);
+        const band = Math.min(14, Math.max(3, knob("bandWidth", 0.35) * meanW));
+        const spread = Math.min(24, Math.max(3, 0.6 * meanW)) * fs; // texels
+        const r = Math.min(1, Math.max(SIGMA_REDUCED / spread, 1.5 / (band * fs)));
+        const dw = Math.max(2, Math.ceil(gw * r));
+        const dh = Math.max(2, Math.ceil(gh * r));
+
+        target(tex.tmpA, dw, dh);
+        const pg = progs.moldGather;
+        gl.useProgram(pg.p);
+        bindTex(0, tex.comb);
+        gl.uniform1i(pg.u("uComb"), 0);
+        gl.uniform2f(pg.u("uOutRect"), dw, dh);
+        gl.uniform2f(pg.u("uField"), gw, gh);
+        gl.uniform2f(pg.u("uTexSize"), capW, capH);
+        gl.uniform1f(pg.u("uLip"), lip);
+        gl.uniform1f(pg.u("uBand"), band);
+        gl.uniform1f(pg.u("uReach"), MOLD_REACH);
+        glassU(pg);
+        fullscreen();
+        // spread the deposit along the edge, like liquid levelling out
+        const sig = spread * (dw / gw);
+        blur(tex.tmpA, tex.tmpB, dw, dh, 1, 0, sig);
+        blur(tex.tmpB, tex.tmpA, dw, dh, 0, 1, sig);
+
+        target(tex.comb2, gw, gh);
+        const pc = progs.moldCombine;
+        gl.useProgram(pc.p);
+        bindTex(0, tex.comb);
+        bindTex(1, tex.tmpA);
+        gl.uniform1i(pc.u("uComb"), 0);
+        gl.uniform1i(pc.u("uDep"), 1);
+        gl.uniform2f(pc.u("uDepRect"), dw, dh);
+        gl.uniform2f(pc.u("uField"), gw, gh);
+        gl.uniform1f(pc.u("uThr"), thr);
+        gl.uniform1f(pc.u("uLip"), lip);
+        gl.uniform1f(pc.u("uBand"), band);
+        gl.uniform1f(pc.u("uWet"), knob("wet", 0.6));
+        gl.uniform1f(pc.u("uDisplace"), knob("displace", 1.0));
+        glassU(pc);
+        fullscreen();
+        const t = tex.comb;
+        tex.comb = tex.comb2;
+        tex.comb2 = t;
+      }
+
       // --- 4. soft dome (wide blur of cover) and shadow source
       const Rg = Math.max(1.5, 0.5 * meanW * fs);
-      const dome = coverBlur(tex.field[0], gw, gh, 1.8 * Rg);
+      const dome = coverBlur(tex.field[0], gw, gh, 1.8 * Rg, hasGlass ? glassU : null);
       const shadow = coverBlur(tex.field[1], gw, gh, Math.max(1.2, 0.5 * Rg));
 
       // --- 5. jump flood: distance from inside texels to the nearest outside texel
@@ -853,6 +1221,8 @@ void main() {
       bindTex(0, tex.comb);
       gl.uniform1i(progs.jfaInit.u("uComb"), 0);
       gl.uniform1f(progs.jfaInit.u("uThr"), thr);
+      gl.uniform2f(progs.jfaInit.u("uFieldRect"), gw, gh);
+      if (material === "silver") glassU(progs.jfaInit);
       fullscreen();
 
       let src = tex.seedA;
@@ -890,6 +1260,8 @@ void main() {
       gl.uniform1f(progs.height.u("uRg"), Rg);
       gl.uniform1f(progs.height.u("uThr"), thr);
       gl.uniform1f(progs.height.u("uDomeK"), opts.domeK != null ? opts.domeK : 1.4);
+      gl.uniform1f(progs.height.u("uFlatR"), Math.min(20, Math.max(6, 1.5 * meanW)));
+      if (material === "silver") glassU(progs.height);
       fullscreen();
       // take the stair-steps and medial-axis creases out of the distance field
       const hSigma = Math.min(4, Math.max(1.4, 0.12 * Rg));
@@ -919,9 +1291,24 @@ void main() {
       }
       gl.uniform1f(progs.final.u("uFs"), fs);
       gl.uniform1f(progs.final.u("uShScale"), Math.min(2, Math.max(0.6, (meanW * 0.5) / 7)));
+      gl.uniform2f(progs.final.u("uOriginCss"), x0, y0);
+      gl.uniform2f(progs.final.u("uRectCss"), rectW, rectH);
+
+      if (material === "silver") {
+        // contact with the glass layer (if any): textures + wrap tunables
+        const fp = progs.final;
+        glassU(fp);
+        gl.uniform1i(fp.u("uGC"), 3);
+        gl.uniform1f(fp.u("uTint"), knob("tintBleed", 0.2));
+        gl.uniform1f(fp.u("uSeam"), knob("seam", 0.6));
+        gl.uniform1f(fp.u("uBevel"), knob("bevel", 0.8));
+        gl.uniform1f(fp.u("uBevW"), Math.min(3, Math.max(1.2, 0.12 * meanW)));
+        gl.uniform1f(fp.u("uFlatG"), knob("flattenGlass", 0.9));
+        gl.uniform1f(fp.u("uFlatW"), knob("flattenWidth", 10));
+      }
       fullscreen();
 
-      return {
+      const rect = {
         x: x0,
         y: y0,
         w: rectW,
@@ -931,9 +1318,35 @@ void main() {
         sw: vw,
         sh: vh,
       };
+      lastPass = { vw, vh, gw, gh, thr, rect, seeds };
+      return rect;
     }
 
-    return { canvas, resize, render, isLost: () => lost };
+    /**
+     * Glass only. Re-runs just the last pass of the previous render() to write the signed
+     * distance to the glass edge (R fine, G coarse, 0.5 = on the edge) into the canvas, same rect as
+     * the colour render. Call right after copying render()'s colour out of the canvas.
+     */
+    function renderDist() {
+      if (lost || !tex || !lastPass || !progs.dist) return null;
+      const p = lastPass;
+      gl.disable(gl.BLEND);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, p.vw, p.vh);
+      gl.useProgram(progs.dist.p);
+      bindTex(0, tex.comb);
+      bindTex(1, p.seeds);
+      gl.uniform1i(progs.dist.u("uComb"), 0);
+      gl.uniform1i(progs.dist.u("uSeed"), 1);
+      gl.uniform2f(progs.dist.u("uVp"), p.vw, p.vh);
+      gl.uniform2f(progs.dist.u("uField"), p.gw, p.gh);
+      gl.uniform1f(progs.dist.u("uThr"), p.thr);
+      gl.uniform1f(progs.dist.u("uFs"), fs);
+      fullscreen();
+      return p.rect;
+    }
+
+    return { canvas, resize, render, renderDist, isLost: () => lost };
   }
 
   window.SilverGL = { create };
