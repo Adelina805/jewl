@@ -36,12 +36,6 @@
   const glassColorById = (id) => GLASS_COLORS.find((c) => c.id === id) || GLASS_COLORS[1];
   let glassColor = "teal";
 
-  // Each tool remembers its own weight range: glass is painted in broad strokes.
-  const TOOL_WEIGHT = {
-    draw: { min: 4, max: 36, value: 14 },
-    glass: { min: 14, max: 90, value: 46 },
-  };
-
   /** @type {Stroke[]} */
   let strokes = [];
   /** @type {Stroke | null} */
@@ -216,13 +210,6 @@
     }
     hint.textContent = HINTS[next] || HINTS.draw;
     swatchesEl.hidden = next !== "glass";
-    if (TOOL_WEIGHT[next]) {
-      const w = TOOL_WEIGHT[next];
-      thicknessInput.min = w.min;
-      thicknessInput.max = w.max;
-      thicknessInput.value = w.value;
-      thickness = Number(thicknessInput.value);
-    }
     syncChrome();
     render();
   }

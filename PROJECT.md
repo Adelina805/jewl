@@ -12,7 +12,7 @@ First working prototype:
 - One pendant canvas with a cool coastal workbench look
 - Paintable sea glass: a Glass tool with a five-color palette (seafoam, teal, cobalt, amber, frosted white)
 - Full-window canvas with header and controls floating over it
-- Freehand silver strokes with Weight control (each tool keeps its own weight range)
+- Freehand silver strokes; one shared Weight slider (4 to 90) drives both silver and glass, and keeps its value when you switch tools
 - Move mode: one tool to drag, select and delete any silver or glass stroke
 - Undo / redo / clear
 - Three modes (Silver · Glass · Move), so painting never accidentally moves anything
@@ -36,6 +36,7 @@ Out of scope for now: accounts, payments, manufacturing export, photo import, mu
 - Strokes fuse visually only; each stroke is still a separate object for Move/Delete, so moving one pulls it out of the blob.
 - The GPU field is capped at ~3.8M texels and 1.5 texels per CSS px, so very large canvases get a slightly coarser height/shadow field (the silhouette edge stays pixel-sharp).
 - Thin strokes on the bright bench need the dark underbelly/contact shadow to stay readable; very fine Weight can still look soft.
+- The shared Weight range (4 to 90) means silver can be set very thick, and fine silver widths take a little more precision on the longer slider.
 - No stylus pressure / tilt yet.
 - Silver draws flat over glass: no true bezel depth, no reflection of the stone in the metal.
 - Glass of different colors does not blend: overlapping groups just composite translucently, and only same-color strokes fuse.
