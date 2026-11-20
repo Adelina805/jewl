@@ -11,8 +11,36 @@
   const deleteBtn = document.getElementById("delete");
   const clearBtn = document.getElementById("clear");
 
+  const swatchesEl = document.getElementById("swatches");
+
   /** @typedef {{x:number,y:number}} Pt */
-  /** @typedef {{id:number, points: Pt[], width: number}} Stroke */
+  /** @typedef {{id:number, kind: "silver"|"glass", color: string, points: Pt[], width: number}} Stroke */
+
+  // Sea-glass palette. Tints are sRGB; "light" is the thin/frosted tone, "deep" the thick body.
+  const GLASS_COLORS = [
+    { id: "seafoam", name: "Seafoam", light: "#c8ecdc", deep: "#5fb89c" },
+    { id: "teal", name: "Teal", light: "#8fd0cc", deep: "#2a7f86" },
+    { id: "cobalt", name: "Cobalt", light: "#8fb4e6", deep: "#2b4fa0" },
+    { id: "amber", name: "Amber", light: "#f0d08a", deep: "#b8741c" },
+    { id: "frost", name: "Frosted white", light: "#f4f8f8", deep: "#b7c9cc" },
+  ];
+  const hexToRgb = (h) => [
+    parseInt(h.slice(1, 3), 16) / 255,
+    parseInt(h.slice(3, 5), 16) / 255,
+    parseInt(h.slice(5, 7), 16) / 255,
+  ];
+  for (const c of GLASS_COLORS) {
+    c.lightRgb = hexToRgb(c.light);
+    c.deepRgb = hexToRgb(c.deep);
+  }
+  const glassColorById = (id) => GLASS_COLORS.find((c) => c.id === id) || GLASS_COLORS[1];
+  let glassColor = "teal";
+
+  // Each tool remembers its own weight range: glass is painted in broad strokes.
+  const TOOL_WEIGHT = {
+    draw: { min: 4, max: 36, value: 14 },
+    glass: { min: 14, max: 90, value: 46 },
+  };
 
   /** @type {Stroke[]} */
   let strokes = [];
@@ -33,47 +61,20 @@
   let width = 0;
   let height = 0;
 
-  const glass = {
-    x: 0,
-    y: 0,
-    rotation: -0.18,
-    scale: 1,
-    placed: false,
-    userMoved: false,
-    outline: buildSeaGlassOutline(),
-  };
-
   /** @type {null | {kind: string, start: Pt, origin: object, last: Pt, strokeId?: number, moved?: boolean}} */
   let drag = null;
 
   const HINTS = {
-    draw: "Draw silver around the glass. Let strokes touch or overlap and they melt into one mass. Switch to Move to reposition anything.",
-    move: "Drag any silver stroke or the glass. Drag the handle to rotate the glass. Delete or ⌫ removes a selected stroke.",
+    draw: "Draw silver over the glass. Let strokes touch or overlap and they melt into one mass. Switch to Move to reposition anything.",
+    glass: "Paint sea glass. Touching strokes of the same color fuse into one tumbled piece. Pick a color first.",
+    move: "Drag any stroke of silver or glass. Delete or ⌫ removes the selected stroke.",
   };
-
-  function buildSeaGlassOutline() {
-    // Irregular tumbled shard — not a smooth oval
-    return [
-      { x: -64, y: -6 },
-      { x: -56, y: -36 },
-      { x: -42, y: -58 },
-      { x: -14, y: -70 },
-      { x: 18, y: -66 },
-      { x: 44, y: -48 },
-      { x: 62, y: -22 },
-      { x: 68, y: 6 },
-      { x: 58, y: 34 },
-      { x: 36, y: 54 },
-      { x: 8, y: 64 },
-      { x: -22, y: 62 },
-      { x: -46, y: 42 },
-      { x: -60, y: 18 },
-    ];
-  }
 
   function cloneStrokes(list) {
     return list.map((s) => ({
       id: s.id,
+      kind: s.kind,
+      color: s.color,
       width: s.width,
       points: s.points.map((p) => ({ x: p.x, y: p.y })),
     }));
@@ -100,15 +101,15 @@
       selectedId = null;
     }
     syncChrome();
-    markMetalDirty();
+    markAllDirty();
     render();
   }
 
   function undo() {
     if (activeStroke) {
+      markDirty(activeStroke.kind);
       activeStroke = null;
       drag = null;
-      markMetalDirty();
       render();
       return;
     }
@@ -146,15 +147,16 @@
         disableGL(err);
       }
     }
-    markMetalDirty();
-
-    // Re-center until the user moves the glass, so full-window resizes stay balanced
-    if (!glass.placed || !glass.userMoved) {
-      glass.x = width * 0.5;
-      glass.y = height * 0.48;
-      glass.scale = Math.min(1.15, Math.max(0.85, width / 720));
-      glass.placed = true;
+    if (glassGL) {
+      try {
+        glassGL.resize(width, height, dpr);
+      } catch (err) {
+        disableGlassGL(err);
+      }
     }
+    glassLayer.canvas.width = Math.floor(width * dpr);
+    glassLayer.canvas.height = Math.floor(height * dpr);
+    markAllDirty();
 
     render();
   }
@@ -171,63 +173,6 @@
     return Math.hypot(a.x - b.x, a.y - b.y);
   }
 
-  function toLocal(p) {
-    const dx = p.x - glass.x;
-    const dy = p.y - glass.y;
-    const c = Math.cos(-glass.rotation);
-    const s = Math.sin(-glass.rotation);
-    return {
-      x: (dx * c - dy * s) / glass.scale,
-      y: (dx * s + dy * c) / glass.scale,
-    };
-  }
-
-  function nearestOnOutline(local) {
-    let best = glass.outline[0];
-    let bestD = Infinity;
-    for (const p of glass.outline) {
-      const d = dist(local, p);
-      if (d < bestD) {
-        bestD = d;
-        best = p;
-      }
-    }
-    return best;
-  }
-
-  function pointInGlass(p) {
-    const local = toLocal(p);
-    const poly = glass.outline;
-    let inside = false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-      const xi = poly[i].x;
-      const yi = poly[i].y;
-      const xj = poly[j].x;
-      const yj = poly[j].y;
-      const intersect =
-        yi > local.y !== yj > local.y &&
-        local.x < ((xj - xi) * (local.y - yi)) / (yj - yi + 1e-9) + xi;
-      if (intersect) inside = !inside;
-    }
-    if (inside) return true;
-    return dist(local, nearestOnOutline(local)) < 14;
-  }
-
-  function rotateHandleWorld() {
-    const local = { x: 0, y: -98 };
-    const c = Math.cos(glass.rotation);
-    const s = Math.sin(glass.rotation);
-    return {
-      x: glass.x + (local.x * c - local.y * s) * glass.scale,
-      y: glass.y + (local.x * s + local.y * c) * glass.scale,
-    };
-  }
-
-  function hitRotateHandle(p) {
-    if (mode !== "move") return false;
-    return dist(p, rotateHandleWorld()) < 18;
-  }
-
   function distToSegment(p, a, b) {
     const dx = b.x - a.x;
     const dy = b.y - a.y;
@@ -238,15 +183,22 @@
     return dist(p, { x: a.x + t * dx, y: a.y + t * dy });
   }
 
+  function strokeHit(s, p) {
+    const thresh = Math.max(8, s.width * 0.55);
+    const pts = s.points;
+    if (pts.length === 1) return dist(p, pts[0]) <= thresh;
+    for (let j = 1; j < pts.length; j++) {
+      if (distToSegment(p, pts[j - 1], pts[j]) <= thresh) return true;
+    }
+    return false;
+  }
+
   function hitStrokeAt(p) {
-    // Topmost stroke first
-    for (let i = strokes.length - 1; i >= 0; i--) {
-      const s = strokes[i];
-      const thresh = Math.max(8, s.width * 0.55);
-      const pts = s.points;
-      if (pts.length === 1 && dist(p, pts[0]) <= thresh) return s;
-      for (let j = 1; j < pts.length; j++) {
-        if (distToSegment(p, pts[j - 1], pts[j]) <= thresh) return s;
+    // Silver sits over glass, so test silver first; within a kind, topmost first
+    for (const kind of ["silver", "glass"]) {
+      for (let i = strokes.length - 1; i >= 0; i--) {
+        const s = strokes[i];
+        if (s.kind === kind && strokeHit(s, p)) return s;
       }
     }
     return null;
@@ -263,8 +215,42 @@
       stage.classList.remove("over-object");
     }
     hint.textContent = HINTS[next] || HINTS.draw;
+    swatchesEl.hidden = next !== "glass";
+    if (TOOL_WEIGHT[next]) {
+      const w = TOOL_WEIGHT[next];
+      thicknessInput.min = w.min;
+      thicknessInput.max = w.max;
+      thicknessInput.value = w.value;
+      thickness = Number(thicknessInput.value);
+    }
     syncChrome();
     render();
+  }
+
+  function buildSwatches() {
+    swatchesEl.textContent = "";
+    for (const c of GLASS_COLORS) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "swatch";
+      b.dataset.color = c.id;
+      b.title = c.name;
+      b.setAttribute("aria-label", c.name);
+      b.style.setProperty("--sw-light", c.light);
+      b.style.setProperty("--sw-deep", c.deep);
+      b.addEventListener("click", () => selectGlassColor(c.id));
+      swatchesEl.appendChild(b);
+    }
+    selectGlassColor(glassColor);
+  }
+
+  function selectGlassColor(id) {
+    glassColor = id;
+    swatchesEl.querySelectorAll(".swatch").forEach((b) => {
+      const on = b.dataset.color === id;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-pressed", String(on));
+    });
   }
 
   function drawWorkbench() {
@@ -393,8 +379,140 @@
     return b;
   }
 
-  function markMetalDirty() {
+  function markDirty(kind) {
+    if (kind === "glass") glassLayer.version++;
+    else metal.version++;
+  }
+
+  function markAllDirty() {
     metal.version++;
+    glassLayer.version++;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Paintable sea glass
+  //
+  // Glass strokes go through the same metaball / distance-field pipeline as the
+  // silver, but are shaded as frosted, translucent, tinted glass. Each palette
+  // color is its own group: strokes of one color fuse together, and groups are
+  // stacked in the order they were first painted. Each group is rendered by the
+  // GPU and composited into a cached layer, which sits under the silver.
+  // ---------------------------------------------------------------------------
+
+  const GLASS = {
+    goo: 0.65, // a bit stickier than silver so painted pieces stay smooth and pebble-like
+    threshold: 0.42,
+    domeK: 0.9, // gentler dome than metal: sea glass is flatter and more matte
+  };
+
+  let glassGL = null;
+  try {
+    glassGL = window.SilverGL ? window.SilverGL.create("glass") : null;
+  } catch (err) {
+    console.warn("[jewl] WebGL glass unavailable, using simple glass", err);
+    glassGL = null;
+  }
+
+  function disableGlassGL(err) {
+    console.warn("[jewl] WebGL glass failed, using simple glass", err);
+    glassGL = null;
+    glassLayer.builtVersion = -1;
+  }
+
+  const glassLayer = {
+    canvas: document.createElement("canvas"),
+    version: 0,
+    builtVersion: -1,
+    empty: true,
+  };
+  const glassLayerCtx = glassLayer.canvas.getContext("2d");
+
+  function strokesOfKind(kind) {
+    const list = strokes.filter((s) => s.kind === kind);
+    if (activeStroke && activeStroke.kind === kind) list.push(activeStroke);
+    return list;
+  }
+
+  function buildGlassLayer() {
+    const c = glassLayerCtx;
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.clearRect(0, 0, glassLayer.canvas.width, glassLayer.canvas.height);
+    glassLayer.builtVersion = glassLayer.version;
+
+    const list = strokesOfKind("glass");
+    glassLayer.empty = list.length === 0;
+    if (glassLayer.empty) return;
+
+    // Group by color, in order of first appearance
+    const groups = new Map();
+    for (const s of list) {
+      if (!groups.has(s.color)) groups.set(s.color, []);
+      groups.get(s.color).push(s);
+    }
+
+    for (const [colorId, group] of groups) {
+      const col = glassColorById(colorId);
+      if (glassGL) {
+        let rect = null;
+        try {
+          rect = glassGL.render(group, {
+            goo: GLASS.goo,
+            threshold: GLASS.threshold,
+            domeK: GLASS.domeK,
+            tintLight: col.lightRgb,
+            tintDeep: col.deepRgb,
+          });
+        } catch (err) {
+          disableGlassGL(err);
+          buildGlassLayer();
+          return;
+        }
+        if (rect) {
+          c.imageSmoothingEnabled = false; // 1:1 device pixels
+          c.drawImage(
+            glassGL.canvas,
+            rect.sx,
+            rect.sy,
+            rect.sw,
+            rect.sh,
+            rect.x * dpr,
+            rect.y * dpr,
+            rect.w * dpr,
+            rect.h * dpr
+          );
+        }
+      } else {
+        // Simple fallback: flat translucent round-cap strokes
+        c.setTransform(dpr, 0, 0, dpr, 0, 0);
+        c.lineCap = "round";
+        c.lineJoin = "round";
+        c.globalAlpha = 0.82;
+        c.strokeStyle = col.deep;
+        c.fillStyle = col.deep;
+        for (const s of group) {
+          c.lineWidth = s.width;
+          if (s.points.length === 1) {
+            c.beginPath();
+            c.arc(s.points[0].x, s.points[0].y, s.width / 2, 0, Math.PI * 2);
+            c.fill();
+          } else {
+            strokePolyline(s.points, c);
+          }
+        }
+        c.globalAlpha = 1;
+        c.setTransform(1, 0, 0, 1, 0, 0);
+      }
+    }
+  }
+
+  function drawGlass() {
+    stage.dataset.glassRenderer = glassGL ? "webgl" : "simple";
+    if (glassLayer.builtVersion !== glassLayer.version) buildGlassLayer();
+    if (glassLayer.empty) return;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(glassLayer.canvas, 0, 0);
+    ctx.restore();
   }
 
   function smoothstep(a, b, x) {
@@ -519,7 +637,7 @@
   }
 
   function buildMetal(quality) {
-    const list = activeStroke ? strokes.concat(activeStroke) : strokes;
+    const list = strokesOfKind("silver");
     if (list.length === 0) {
       metal.builtQuality = quality;
       emptyMetal();
@@ -737,7 +855,7 @@
     }
     if (metal.builtVersion !== metal.version) {
       try {
-        const list = activeStroke ? strokes.concat(activeStroke) : strokes;
+        const list = strokesOfKind("silver");
         metal.glRect = silverGL.render(list, SILVER);
       } catch (err) {
         disableGL(err);
@@ -772,14 +890,14 @@
     ctx.restore();
   }
 
-  function drawSelection() {
+  /** Halo behind the selected stroke; drawn at the layer the stroke lives on. */
+  function drawSelection(kind) {
     if (mode !== "move" || selectedId == null) return;
     const sel = strokes.find((st) => st.id === selectedId);
-    if (!sel) return;
+    if (!sel || sel.kind !== kind) return;
     ctx.save();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    // Drawn under the silver, so it reads as a halo around the selected piece
     ctx.strokeStyle = "rgba(70, 120, 160, 0.45)";
     ctx.fillStyle = "rgba(70, 120, 160, 0.45)";
     ctx.lineWidth = sel.width + 12;
@@ -793,152 +911,14 @@
     ctx.restore();
   }
 
-  function glassPath(c) {
-    const pts = glass.outline;
-    c.beginPath();
-    // Catmull-ish smooth closed curve via midpoints for softer tumbled edges
-    const n = pts.length;
-    const mid0x = (pts[n - 1].x + pts[0].x) / 2;
-    const mid0y = (pts[n - 1].y + pts[0].y) / 2;
-    c.moveTo(mid0x, mid0y);
-    for (let i = 0; i < n; i++) {
-      const curr = pts[i];
-      const next = pts[(i + 1) % n];
-      const midX = (curr.x + next.x) / 2;
-      const midY = (curr.y + next.y) / 2;
-      c.quadraticCurveTo(curr.x, curr.y, midX, midY);
-    }
-    c.closePath();
-  }
-
-  function drawSeaGlass() {
-    ctx.save();
-    ctx.translate(glass.x, glass.y);
-    ctx.rotate(glass.rotation);
-    ctx.scale(glass.scale, glass.scale);
-
-    // Soft diffused shadow
-    ctx.save();
-    ctx.translate(2.5, 4.5);
-    glassPath(ctx);
-    ctx.fillStyle = "rgba(40, 55, 65, 0.18)";
-    ctx.filter = "blur(2px)";
-    ctx.fill();
-    ctx.filter = "none";
-    ctx.restore();
-
-    // Frosted body
-    glassPath(ctx);
-    const body = ctx.createLinearGradient(-72, -72, 72, 84);
-    body.addColorStop(0, "rgba(190, 230, 222, 0.62)");
-    body.addColorStop(0.28, "rgba(110, 185, 178, 0.7)");
-    body.addColorStop(0.58, "rgba(58, 138, 142, 0.78)");
-    body.addColorStop(0.82, "rgba(72, 150, 148, 0.72)");
-    body.addColorStop(1, "rgba(140, 198, 188, 0.58)");
-    ctx.fillStyle = body;
-    ctx.fill();
-
-    // Soft outer frost halo
-    ctx.save();
-    glassPath(ctx);
-    ctx.clip();
-    ctx.globalCompositeOperation = "source-atop";
-    ctx.lineWidth = 14;
-    ctx.strokeStyle = "rgba(235, 248, 244, 0.55)";
-    ctx.stroke();
-    ctx.lineWidth = 7;
-    ctx.strokeStyle = "rgba(210, 235, 228, 0.35)";
-    ctx.stroke();
-    ctx.restore();
-
-    // Inner depth bloom + mineral flecks
-    ctx.save();
-    glassPath(ctx);
-    ctx.clip();
-
-    const bloom = ctx.createRadialGradient(-16, -20, 2, -4, -6, 78);
-    bloom.addColorStop(0, "rgba(245, 255, 250, 0.5)");
-    bloom.addColorStop(0.4, "rgba(130, 200, 190, 0.18)");
-    bloom.addColorStop(1, "rgba(25, 80, 88, 0.22)");
-    ctx.fillStyle = bloom;
-    ctx.fillRect(-110, -110, 220, 220);
-
-    // Secondary cool pocket
-    const pocket = ctx.createRadialGradient(28, 22, 2, 22, 18, 42);
-    pocket.addColorStop(0, "rgba(40, 110, 120, 0.28)");
-    pocket.addColorStop(1, "rgba(40, 110, 120, 0)");
-    ctx.fillStyle = pocket;
-    ctx.fillRect(-110, -110, 220, 220);
-
-    ctx.globalAlpha = 0.18;
-    for (let i = 0; i < 22; i++) {
-      const fx = Math.sin(i * 2.17) * 38 + Math.cos(i * 0.9) * 10;
-      const fy = Math.cos(i * 1.63) * 42;
-      ctx.fillStyle = i % 3 === 0 ? "#f0fffa" : "#2a6562";
-      ctx.beginPath();
-      ctx.ellipse(fx, fy, 1.2 + (i % 3) * 0.35, 0.75, i * 0.4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.restore();
-
-    // Soft tumbled rim — muted, not a hard outline
-    glassPath(ctx);
-    ctx.lineWidth = 3.2;
-    ctx.strokeStyle = "rgba(220, 238, 232, 0.4)";
-    ctx.stroke();
-    ctx.lineWidth = 1.1;
-    ctx.strokeStyle = "rgba(45, 95, 100, 0.18)";
-    ctx.stroke();
-
-    // Specular kiss — soft and small
-    ctx.save();
-    glassPath(ctx);
-    ctx.clip();
-    ctx.globalAlpha = 0.28;
-    ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
-    ctx.beginPath();
-    ctx.ellipse(-18, -30, 16, 7.5, -0.55, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-
-    if (mode === "move") {
-      glassPath(ctx);
-      ctx.setLineDash([5 / glass.scale, 5 / glass.scale]);
-      ctx.strokeStyle = "rgba(28, 36, 44, 0.38)";
-      ctx.lineWidth = 1.1 / glass.scale;
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-
-    ctx.restore();
-
-    if (mode === "move") {
-      const handle = rotateHandleWorld();
-      ctx.save();
-      ctx.beginPath();
-      ctx.moveTo(glass.x, glass.y);
-      ctx.lineTo(handle.x, handle.y);
-      ctx.strokeStyle = "rgba(28, 36, 44, 0.28)";
-      ctx.lineWidth = 1;
-      ctx.stroke();
-
-      ctx.beginPath();
-      ctx.arc(handle.x, handle.y, 7, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
-      ctx.fill();
-      ctx.strokeStyle = "rgba(28, 36, 44, 0.55)";
-      ctx.lineWidth = 1.25;
-      ctx.stroke();
-      ctx.restore();
-    }
-  }
-
   /** quality "live" = fast, low-res metal (while drawing / dragging); "full" = settled. */
   function render(quality = "full") {
     drawWorkbench();
-    drawSelection();
+    // Layer order: bench, glass, silver (silver sits over the stone)
+    drawSelection("glass");
+    drawGlass();
+    drawSelection("silver");
     drawMetal(quality);
-    drawSeaGlass();
   }
 
   let rafId = 0;
@@ -959,7 +939,7 @@
     const pts = activeStroke.points;
     if (pts.length === 0 || dist(pts[pts.length - 1], p) >= 1.4) {
       pts.push(p);
-      markMetalDirty();
+      markDirty(activeStroke.kind);
       scheduleRender("live");
     }
   }
@@ -967,10 +947,11 @@
   function deleteSelected() {
     if (selectedId == null) return;
     pushHistory();
+    const removed = strokes.find((s) => s.id === selectedId);
     strokes = strokes.filter((s) => s.id !== selectedId);
     selectedId = null;
     syncChrome();
-    markMetalDirty();
+    if (removed) markDirty(removed.kind);
     render();
   }
 
@@ -982,7 +963,7 @@
     selectedId = null;
     drag = null;
     syncChrome();
-    markMetalDirty();
+    markAllDirty();
     render();
   }
 
@@ -991,24 +972,8 @@
     const p = pointerPos(e);
     canvas.setPointerCapture(e.pointerId);
 
-    // Move mode — one tool for everything on the canvas.
-    // Pick order: rotate handle, then silver (precise, thin targets), then glass.
+    // Move mode — one tool for every stroke on the canvas (silver first, then glass).
     if (mode === "move") {
-      if (hitRotateHandle(p)) {
-        selectedId = null;
-        glass.userMoved = true;
-        drag = {
-          kind: "rotate",
-          start: p,
-          origin: { rotation: glass.rotation },
-          last: p,
-        };
-        stage.classList.add("dragging");
-        syncChrome();
-        render();
-        return;
-      }
-
       const hit = hitStrokeAt(p);
       if (hit) {
         selectedId = hit.id;
@@ -1027,25 +992,17 @@
       }
 
       selectedId = null;
-      if (pointInGlass(p)) {
-        glass.userMoved = true;
-        drag = {
-          kind: "move-glass",
-          start: p,
-          origin: { x: glass.x, y: glass.y },
-          last: p,
-        };
-        stage.classList.add("dragging");
-      }
       syncChrome();
       render();
       return;
     }
 
-    // Draw mode — never moves glass; stroke stays under glass visually
+    // Silver / Glass modes paint a new stroke; they never move anything
     selectedId = null;
     activeStroke = {
       id: nextStrokeId++,
+      kind: mode === "glass" ? "glass" : "silver",
+      color: glassColor,
       points: [p],
       width: thickness,
     };
@@ -1057,7 +1014,7 @@
     const p = pointerPos(e);
 
     if (mode === "move" && !drag) {
-      const over = hitRotateHandle(p) || hitStrokeAt(p) || pointInGlass(p);
+      const over = hitStrokeAt(p);
       stage.classList.toggle("over-object", !!over);
     }
 
@@ -1066,23 +1023,6 @@
     if (drag.kind === "draw") {
       appendPoint(p);
       drag.last = p;
-      return;
-    }
-
-    if (drag.kind === "move-glass") {
-      glass.x = drag.origin.x + (p.x - drag.start.x);
-      glass.y = drag.origin.y + (p.y - drag.start.y);
-      drag.last = p;
-      render("live");
-      return;
-    }
-
-    if (drag.kind === "rotate") {
-      const a0 = Math.atan2(drag.start.y - glass.y, drag.start.x - glass.x);
-      const a1 = Math.atan2(p.y - glass.y, p.x - glass.x);
-      glass.rotation = drag.origin.rotation + (a1 - a0);
-      drag.last = p;
-      render("live");
       return;
     }
 
@@ -1100,7 +1040,7 @@
             pt.x += dx;
             pt.y += dy;
           }
-          markMetalDirty();
+          markDirty(stroke.kind);
         }
       }
       drag.last = p;
@@ -1116,8 +1056,8 @@
         pushHistory();
         strokes.push(activeStroke);
       }
+      markDirty(activeStroke.kind);
       activeStroke = null;
-      markMetalDirty();
     }
 
     drag = null;
@@ -1177,6 +1117,7 @@
 
     if (!meta && !e.altKey) {
       if (key === "d" || key === "s") setMode("draw");
+      if (key === "g") setMode("glass");
       if (key === "m" || key === "e" || key === "p") setMode("move");
       if (key === "escape") {
         selectedId = null;
@@ -1188,6 +1129,7 @@
 
   window.addEventListener("resize", resize);
 
+  buildSwatches();
   setMode("draw");
   syncChrome();
   resize();

@@ -12,8 +12,12 @@
  *      normals from the height map, a procedural studio environment reflected
  *      in the surface, and a soft shadow.
  *
- * Exposes window.SilverGL.create(); returns null when WebGL2 + float render
- * targets are unavailable so the caller can fall back to the CPU renderer.
+ * The same pipeline renders two materials, chosen with create(material):
+ *   "silver" - chrome reflecting a studio environment (default)
+ *   "glass"  - frosted, translucent, tinted sea glass (opts.tintLight / opts.tintDeep)
+ *
+ * Exposes window.SilverGL.create(material); returns null when WebGL2 + float render
+ * targets are unavailable so the caller can fall back to a simple renderer.
  */
 (() => {
   "use strict";
@@ -260,6 +264,7 @@ uniform vec2 uDomeRect;
 uniform vec2 uRect;
 uniform float uRg;
 uniform float uThr;
+uniform float uDomeK;
 out vec4 o;
 ${BSPLINE_GLSL}
 void main() {
@@ -275,11 +280,73 @@ void main() {
   float pool = smoothstep(0.0, 1.0, A);
   // rounded tube profile (tiny epsilon keeps the slope finite at the rim) + smooth pillow dome
   float tube = sqrt(max(0.0, 1.0 - u * u) + 1e-3) - 0.031622777;
-  float h = uRg * tube + uRg * pool * 1.4;
+  float h = uRg * tube + uRg * pool * uDomeK;
   o = vec4(h, 0.0, 0.0, 1.0);
 }`;
 
-  const FINAL_FS = `#version 300 es
+  // The final pass is shared; each material supplies extra GLSL (uniforms/functions,
+  // including thrAt(), the field level of the surface edge) and a shading block that
+  // sets premultiplied `rgb` and `alpha` for texels inside the surface.
+  const SILVER_EXTRA = `
+float thrAt(vec2 f) { return uThr; }
+`;
+
+  const SILVER_SHADE = `
+    float v = envLum(vec3(2.0 * nz * nx, 2.0 * nz * ny, 2.0 * nz * nz - 1.0));
+    vec3 chrome = min(vec3(18.0, 21.0, 28.0) / 255.0 + vec3(238.0, 239.0, 240.0) / 255.0 * v, vec3(1.0));
+    rgb = chrome * c + shadowCol * aS;
+    alpha = c + aS;
+`;
+
+  // Frosted, translucent sea glass: tinted body that deepens with thickness, a lighter
+  // frosted rim, broad matte highlights, fine grain, and a gently wobbling edge.
+  const GLASS_EXTRA = `
+uniform float uHs;        // height scale (texels): the tube radius
+uniform vec3 uTintLight;
+uniform vec3 uTintDeep;
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+float vnoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 fr = fract(p);
+  vec2 u = fr * fr * (3.0 - 2.0 * fr);
+  return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), u.x),
+             mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float thrAt(vec2 f) {
+  vec2 w = f / uFs / 34.0;
+  float n = vnoise(w) * 0.8 + vnoise(w * 1.9 + 7.1) * 0.2;
+  return uThr + (n - 0.5) * 0.08;
+}
+`;
+
+  const GLASS_SHADE = `
+    float tubeT = clamp(hg.x / max(uHs, 1.0), 0.0, 1.0);
+    float depth = clamp(hg.x / (max(uHs, 1.0) * 2.2), 0.0, 1.0);
+    float frost = 1.0 - smoothstep(0.0, 0.75, tubeT);
+    vec3 n = vec3(nx, ny, nz);
+    vec3 L = normalize(vec3(-0.5, -0.62, 0.6));
+    float diff = dot(n, L);
+    vec3 body = mix(uTintLight, uTintDeep, smoothstep(0.1, 0.9, depth));
+    body *= 0.88 + 0.22 * diff;
+    vec3 frostCol = mix(uTintLight, vec3(0.96, 0.985, 0.98), 0.7);
+    body = mix(body, frostCol, 0.18 + frost * 0.55);
+    vec3 Hh = normalize(L + vec3(0.0, 0.0, 1.0));
+    float nh = max(dot(n, Hh), 0.0);
+    float spec = pow(nh, 14.0) * 0.16 + pow(nh, 70.0) * 0.05;
+    float grain = (hash12(gl_FragCoord.xy) - 0.5) * 0.06;
+    body += spec + grain;
+    float ga = mix(0.52, 0.84, smoothstep(0.0, 0.8, depth)) + frost * 0.08;
+    ga = clamp(max(ga, spec * 1.5), 0.0, 0.94);
+    vec3 col = clamp(body, 0.0, 1.0);
+    rgb = col * ga * c + shadowCol * aS;
+    alpha = ga * c + aS;
+`;
+
+  const finalFS = (extra, shade) => `#version 300 es
 precision highp float;
 uniform sampler2D uComb;
 uniform sampler2D uH;
@@ -313,14 +380,14 @@ ${BSPLINE_GLSL}
 float sAt(vec2 f) {
   return bs(uS, f * (uShRect / uField), uShRect);
 }
-
+${extra}
 void main() {
   vec2 uv = vec2(gl_FragCoord.x / uVp.x, 1.0 - gl_FragCoord.y / uVp.y);
   vec2 f = uv * uField;
 
   float F = bs(uComb, f, uField);
   float fw = max(fwidth(F), 1e-5);
-  float c = clamp((F - uThr) / fw + 0.5, 0.0, 1.0);
+  float c = clamp((F - thrAt(f)) / fw + 0.5, 0.0, 1.0);
 
   float aS = 0.0;
   if (c < 0.999) {
@@ -342,13 +409,15 @@ void main() {
     float nz = inversesqrt(gx * gx + gy * gy + 1.0);
     float nx = -gx * nz;
     float ny = -gy * nz;
-    float v = envLum(vec3(2.0 * nz * nx, 2.0 * nz * ny, 2.0 * nz * nz - 1.0));
-    vec3 chrome = min(vec3(18.0, 21.0, 28.0) / 255.0 + vec3(238.0, 239.0, 240.0) / 255.0 * v, vec3(1.0));
-    rgb = chrome * c + shadowCol * aS;
-    alpha = c + aS;
+    ${shade}
   }
   fragColor = vec4(rgb, alpha);
 }`;
+
+  const FINAL_FS = {
+    silver: finalFS(SILVER_EXTRA, SILVER_SHADE),
+    glass: finalFS(GLASS_EXTRA, GLASS_SHADE),
+  };
 
   // ---------------------------------------------------------------- helpers --
   function widthBucket(w) {
@@ -400,7 +469,8 @@ void main() {
     return stroke._flat.v;
   }
 
-  function create() {
+  function create(material = "silver") {
+    if (!FINAL_FS[material]) material = "silver";
     const canvas = document.createElement("canvas");
     const gl = canvas.getContext("webgl2", {
       alpha: true,
@@ -462,7 +532,7 @@ void main() {
         jfaInit: program(FULLSCREEN_VS, JFA_INIT_FS),
         jfaStep: program(FULLSCREEN_VS, JFA_STEP_FS),
         height: program(FULLSCREEN_VS, HEIGHT_FS),
-        final: program(FULLSCREEN_VS, FINAL_FS),
+        final: program(FULLSCREEN_VS, FINAL_FS[material]),
       };
     } catch (err) {
       console.warn("[silver-gl]", err);
@@ -819,6 +889,7 @@ void main() {
       gl.uniform2f(progs.height.u("uRect"), gw, gh);
       gl.uniform1f(progs.height.u("uRg"), Rg);
       gl.uniform1f(progs.height.u("uThr"), thr);
+      gl.uniform1f(progs.height.u("uDomeK"), opts.domeK != null ? opts.domeK : 1.4);
       fullscreen();
       // take the stair-steps and medial-axis creases out of the distance field
       const hSigma = Math.min(4, Math.max(1.4, 0.12 * Rg));
@@ -839,6 +910,13 @@ void main() {
       gl.uniform2f(progs.final.u("uField"), gw, gh);
       gl.uniform2f(progs.final.u("uShRect"), shadow.w, shadow.h);
       gl.uniform1f(progs.final.u("uThr"), thr);
+      if (material === "glass") {
+        const tl = opts.tintLight || [0.6, 0.85, 0.82];
+        const td = opts.tintDeep || [0.2, 0.5, 0.52];
+        gl.uniform1f(progs.final.u("uHs"), Rg);
+        gl.uniform3f(progs.final.u("uTintLight"), tl[0], tl[1], tl[2]);
+        gl.uniform3f(progs.final.u("uTintDeep"), td[0], td[1], td[2]);
+      }
       gl.uniform1f(progs.final.u("uFs"), fs);
       gl.uniform1f(progs.final.u("uShScale"), Math.min(2, Math.max(0.6, (meanW * 0.5) / 7)));
       fullscreen();
