@@ -990,7 +990,7 @@ void main() {
     // ---------------------------------------------------------------- render --
     /**
      * @param {{points:{x:number,y:number}[], width:number}[]} strokes
-     * @param {{goo:number, threshold:number}} opts
+     * @param {{goo:number, threshold:number, maxArea?: number}} opts
      * @returns {null | {x:number,y:number,w:number,h:number,sx:number,sy:number,sw:number,sh:number}}
      */
     function render(strokes, opts) {
@@ -1033,12 +1033,16 @@ void main() {
       // pushed-out metal can land up to MOLD_REACH px from where it was drawn
       const margin = maxW * 1.1 + 18 + (hasGlass ? MOLD_REACH : 0);
 
-      // Snap the rect to whole device pixels so the final copy is 1:1
+      // Snap the rect to whole device pixels so the final copy is 1:1 at full quality.
+      // When opts.maxArea caps resolution (live drawing), skip the snap — the blit upscales.
       let unit = 1;
-      for (let k = 1; k <= 8; k++) {
-        if (Math.abs(k * curDpr - Math.round(k * curDpr)) < 1e-6) {
-          unit = k;
-          break;
+      const maxArea = opts.maxArea > 0 ? opts.maxArea : 0;
+      if (!maxArea) {
+        for (let k = 1; k <= 8; k++) {
+          if (Math.abs(k * curDpr - Math.round(k * curDpr)) < 1e-6) {
+            unit = k;
+            break;
+          }
         }
       }
       const x0 = Math.floor(Math.max(minX - margin, -PAD) / unit) * unit;
@@ -1047,12 +1051,19 @@ void main() {
       const y1 = Math.ceil(Math.min(maxY + margin, curH + PAD));
       if (x1 - x0 < 2 || y1 - y0 < 2) return null;
 
-      const vw = Math.min(canvas.width, Math.ceil((x1 - x0) * curDpr));
-      const vh = Math.min(canvas.height, Math.ceil((y1 - y0) * curDpr));
-      const rectW = vw / curDpr;
-      const rectH = vh / curDpr;
-      const gw = Math.max(2, Math.min(capW, Math.round(rectW * fs)));
-      const gh = Math.max(2, Math.min(capH, Math.round(rectH * fs)));
+      // CSS rect stays full-size for positioning; pixelScale may drop under maxArea.
+      const rectW = x1 - x0;
+      const rectH = y1 - y0;
+      let pixelScale = curDpr;
+      if (maxArea) {
+        const fullArea = rectW * rectH * curDpr * curDpr;
+        if (fullArea > maxArea) pixelScale = curDpr * Math.sqrt(maxArea / fullArea);
+      }
+      const vw = Math.min(canvas.width, Math.max(2, Math.ceil(rectW * pixelScale)));
+      const vh = Math.min(canvas.height, Math.max(2, Math.ceil(rectH * pixelScale)));
+      const fieldScale = fs * (pixelScale / curDpr);
+      const gw = Math.max(2, Math.min(capW, Math.round(rectW * fieldScale)));
+      const gh = Math.max(2, Math.min(capH, Math.round(rectH * fieldScale)));
 
       // --- per-bucket instance data
       const data = [0, 1, 2].map((b) => new Float32Array(bucketSegs[b] * 5));
@@ -1095,7 +1106,7 @@ void main() {
       for (let b = 0; b < 3; b++) {
         if (bucketSegs[b] === 0) continue;
         use[b] = 1;
-        const sigma0 = goo * bucketMinW[b] * fs;
+        const sigma0 = goo * bucketMinW[b] * fieldScale;
         const r = Math.min(1, SIGMA_REDUCED / sigma0);
         const bw = Math.max(2, Math.ceil(gw * r));
         const bh = Math.max(2, Math.ceil(gh * r));
@@ -1166,8 +1177,8 @@ void main() {
       if (hasGlass) {
         const lip = knob("lipOverlap", 1.5);
         const band = Math.min(14, Math.max(3, knob("bandWidth", 0.35) * meanW));
-        const spread = Math.min(24, Math.max(3, 0.6 * meanW)) * fs; // texels
-        const r = Math.min(1, Math.max(SIGMA_REDUCED / spread, 1.5 / (band * fs)));
+        const spread = Math.min(24, Math.max(3, 0.6 * meanW)) * fieldScale; // texels
+        const r = Math.min(1, Math.max(SIGMA_REDUCED / spread, 1.5 / (band * fieldScale)));
         const dw = Math.max(2, Math.ceil(gw * r));
         const dh = Math.max(2, Math.ceil(gh * r));
 
@@ -1211,7 +1222,7 @@ void main() {
       }
 
       // --- 4. soft dome (wide blur of cover) and shadow source
-      const Rg = Math.max(1.5, 0.5 * meanW * fs);
+      const Rg = Math.max(1.5, 0.5 * meanW * fieldScale);
       const dome = coverBlur(tex.field[0], gw, gh, 1.8 * Rg, hasGlass ? glassU : null);
       const shadow = coverBlur(tex.field[1], gw, gh, Math.max(1.2, 0.5 * Rg));
 
@@ -1289,7 +1300,7 @@ void main() {
         gl.uniform3f(progs.final.u("uTintLight"), tl[0], tl[1], tl[2]);
         gl.uniform3f(progs.final.u("uTintDeep"), td[0], td[1], td[2]);
       }
-      gl.uniform1f(progs.final.u("uFs"), fs);
+      gl.uniform1f(progs.final.u("uFs"), fieldScale);
       gl.uniform1f(progs.final.u("uShScale"), Math.min(2, Math.max(0.6, (meanW * 0.5) / 7)));
       gl.uniform2f(progs.final.u("uOriginCss"), x0, y0);
       gl.uniform2f(progs.final.u("uRectCss"), rectW, rectH);
@@ -1318,7 +1329,7 @@ void main() {
         sw: vw,
         sh: vh,
       };
-      lastPass = { vw, vh, gw, gh, thr, rect, seeds };
+      lastPass = { vw, vh, gw, gh, thr, fieldScale, rect, seeds };
       return rect;
     }
 
@@ -1341,7 +1352,7 @@ void main() {
       gl.uniform2f(progs.dist.u("uVp"), p.vw, p.vh);
       gl.uniform2f(progs.dist.u("uField"), p.gw, p.gh);
       gl.uniform1f(progs.dist.u("uThr"), p.thr);
-      gl.uniform1f(progs.dist.u("uFs"), fs);
+      gl.uniform1f(progs.dist.u("uFs"), p.fieldScale);
       fullscreen();
       return p.rect;
     }

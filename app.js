@@ -154,6 +154,7 @@
     glassLayer.dist.height = glassLayer.canvas.height;
     metal.layer.width = glassLayer.canvas.width;
     metal.layer.height = glassLayer.canvas.height;
+    // markAllDirty clears the per-color glass cache after the layer bitmaps resize
     markAllDirty();
 
     render();
@@ -373,12 +374,16 @@
     return b;
   }
 
-  function markDirty(kind) {
+  /**
+   * @param {"silver"|"glass"} kind
+   * @param {{ deferMetal?: boolean }} [opts] - when deferMetal, skip remolding silver
+   *   during live glass paint/move; call again without it on settle.
+   */
+  function markDirty(kind, opts) {
     if (kind === "glass") {
       glassLayer.version++;
-      // the silver reads the glass layer to wrap it, so it must redraw too (only matters
-      // when there is silver on the canvas)
-      if (strokes.some((s) => s.kind === "silver")) metal.version++;
+      // silver reads the glass layer to mold around it; defer during live glass gestures
+      if (!opts?.deferMetal && strokes.some((s) => s.kind === "silver")) metal.version++;
     } else {
       metal.version++;
     }
@@ -387,6 +392,7 @@
   function markAllDirty() {
     metal.version++;
     glassLayer.version++;
+    clearGlassGroupCache();
   }
 
   // ---------------------------------------------------------------------------
@@ -433,6 +439,7 @@
     console.warn("[jewl] WebGL glass failed, using simple glass", err);
     glassGL = null;
     glassLayer.builtVersion = -1;
+    clearGlassGroupCache();
   }
 
   const glassLayer = {
@@ -441,11 +448,20 @@
     dist: document.createElement("canvas"),
     version: 0,
     builtVersion: -1,
+    builtQuality: "full",
     empty: true,
     hasDist: false,
   };
   const glassLayerCtx = glassLayer.canvas.getContext("2d");
   const glassDistCtx = glassLayer.dist.getContext("2d");
+
+  // Per-color GPU results so painting one color does not re-render the others.
+  /** @type {Map<string, {sig:string, quality:string, hasDist:boolean, color:HTMLCanvasElement, dist:HTMLCanvasElement, x:number, y:number, w:number, h:number}>} */
+  const glassGroupCache = new Map();
+
+  function clearGlassGroupCache() {
+    glassGroupCache.clear();
+  }
 
   function strokesOfKind(kind) {
     const list = strokes.filter((s) => s.kind === kind);
@@ -453,7 +469,38 @@
     return list;
   }
 
-  function buildGlassLayer() {
+  function hasSilverStrokes() {
+    return strokesOfKind("silver").length > 0;
+  }
+
+  /** Content signature for a same-color glass group (invalidates when the stroke geometry changes). */
+  function glassGroupSignature(group) {
+    const parts = [];
+    for (const s of group) {
+      const a = s.points[0];
+      const b = s.points[s.points.length - 1];
+      parts.push(`${s.id}:${s.points.length}:${s.width}:${a.x.toFixed(1)},${a.y.toFixed(1)}:${b.x.toFixed(1)},${b.y.toFixed(1)}`);
+    }
+    return parts.join("|");
+  }
+
+  function ensureGroupCacheCanvases(entry, sw, sh) {
+    if (entry.color.width !== sw || entry.color.height !== sh) {
+      entry.color.width = sw;
+      entry.color.height = sh;
+    }
+    if (entry.dist.width !== sw || entry.dist.height !== sh) {
+      entry.dist.width = sw;
+      entry.dist.height = sh;
+    }
+  }
+
+  /**
+   * @param {"live"|"full"} quality
+   * @param {{ needDist?: boolean }} [opts]
+   */
+  function buildGlassLayer(quality = "full", opts) {
+    const needDist = !!(opts && opts.needDist);
     const c = glassLayerCtx;
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.clearRect(0, 0, glassLayer.canvas.width, glassLayer.canvas.height);
@@ -465,10 +512,14 @@
     dc.fillRect(0, 0, glassLayer.dist.width, glassLayer.dist.height);
     glassLayer.hasDist = false;
     glassLayer.builtVersion = glassLayer.version;
+    glassLayer.builtQuality = quality;
 
     const list = strokesOfKind("glass");
     glassLayer.empty = list.length === 0;
-    if (glassLayer.empty) return;
+    if (glassLayer.empty) {
+      clearGlassGroupCache();
+      return;
+    }
 
     // Group by color, in order of first appearance
     const groups = new Map();
@@ -477,55 +528,115 @@
       groups.get(s.color).push(s);
     }
 
+    // Drop cache entries for colors that are no longer present
+    for (const key of glassGroupCache.keys()) {
+      if (!groups.has(key)) glassGroupCache.delete(key);
+    }
+
+    const maxArea = quality === "live" ? SILVER.liveArea : 0;
+    const upscale = quality === "live";
+
     for (const [colorId, group] of groups) {
       const col = glassColorById(colorId);
       if (glassGL) {
-        let rect = null;
-        try {
-          rect = glassGL.render(group, {
-            goo: GLASS.goo,
-            threshold: GLASS.threshold,
-            domeK: GLASS.domeK,
-            tintLight: col.lightRgb,
-            tintDeep: col.deepRgb,
-          });
-        } catch (err) {
-          disableGlassGL(err);
-          buildGlassLayer();
-          return;
-        }
-        if (rect) {
-          c.imageSmoothingEnabled = false; // 1:1 device pixels
-          c.drawImage(
-            glassGL.canvas,
-            rect.sx,
-            rect.sy,
-            rect.sw,
-            rect.sh,
-            rect.x * dpr,
-            rect.y * dpr,
-            rect.w * dpr,
-            rect.h * dpr
-          );
-          // same pass again as signed distance to the glass edge, for the silver to read
-          const dr = glassGL.renderDist();
-          if (dr) {
-            dc.imageSmoothingEnabled = false;
-            dc.globalCompositeOperation = "lighten";
-            dc.drawImage(
-              glassGL.canvas,
-              dr.sx,
-              dr.sy,
-              dr.sw,
-              dr.sh,
-              dr.x * dpr,
-              dr.y * dpr,
-              dr.w * dpr,
-              dr.h * dpr
-            );
-            dc.globalCompositeOperation = "source-over";
-            glassLayer.hasDist = true;
+        const sig = glassGroupSignature(group);
+        let entry = glassGroupCache.get(colorId);
+        const cacheHit =
+          entry &&
+          entry.sig === sig &&
+          entry.quality === quality &&
+          (!needDist || entry.hasDist);
+
+        if (!cacheHit) {
+          let rect = null;
+          try {
+            rect = glassGL.render(group, {
+              goo: GLASS.goo,
+              threshold: GLASS.threshold,
+              domeK: GLASS.domeK,
+              tintLight: col.lightRgb,
+              tintDeep: col.deepRgb,
+              maxArea,
+            });
+          } catch (err) {
+            disableGlassGL(err);
+            buildGlassLayer(quality, opts);
+            return;
           }
+          if (!rect) {
+            glassGroupCache.delete(colorId);
+            continue;
+          }
+          if (!entry) {
+            entry = {
+              sig: "",
+              quality,
+              hasDist: false,
+              color: document.createElement("canvas"),
+              dist: document.createElement("canvas"),
+              x: 0,
+              y: 0,
+              w: 0,
+              h: 0,
+            };
+            glassGroupCache.set(colorId, entry);
+          }
+          ensureGroupCacheCanvases(entry, rect.sw, rect.sh);
+          const ec = entry.color.getContext("2d");
+          ec.setTransform(1, 0, 0, 1, 0, 0);
+          ec.clearRect(0, 0, rect.sw, rect.sh);
+          ec.imageSmoothingEnabled = false;
+          ec.drawImage(glassGL.canvas, rect.sx, rect.sy, rect.sw, rect.sh, 0, 0, rect.sw, rect.sh);
+
+          entry.hasDist = false;
+          if (needDist) {
+            const dr = glassGL.renderDist();
+            if (dr) {
+              const ed = entry.dist.getContext("2d");
+              ed.setTransform(1, 0, 0, 1, 0, 0);
+              ed.clearRect(0, 0, rect.sw, rect.sh);
+              ed.imageSmoothingEnabled = false;
+              ed.drawImage(glassGL.canvas, dr.sx, dr.sy, dr.sw, dr.sh, 0, 0, dr.sw, dr.sh);
+              entry.hasDist = true;
+            }
+          }
+          entry.sig = sig;
+          entry.quality = quality;
+          entry.x = rect.x;
+          entry.y = rect.y;
+          entry.w = rect.w;
+          entry.h = rect.h;
+        }
+
+        // Composite cached group into the full-canvas glass layer (upscale when live)
+        c.imageSmoothingEnabled = upscale;
+        c.drawImage(
+          entry.color,
+          0,
+          0,
+          entry.color.width,
+          entry.color.height,
+          entry.x * dpr,
+          entry.y * dpr,
+          entry.w * dpr,
+          entry.h * dpr
+        );
+        if (needDist && entry.hasDist) {
+          dc.imageSmoothingEnabled = upscale;
+          dc.globalCompositeOperation = "lighten";
+          dc.drawImage(
+            entry.dist,
+            0,
+            0,
+            entry.dist.width,
+            entry.dist.height,
+            entry.x * dpr,
+            entry.y * dpr,
+            entry.w * dpr,
+            entry.h * dpr
+          );
+          dc.globalCompositeOperation = "source-over";
+          glassLayer.hasDist = true;
         }
       } else {
         // Simple fallback: flat translucent round-cap strokes
@@ -551,9 +662,17 @@
     }
   }
 
-  function drawGlass() {
+  /** @param {"live"|"full"} [quality] */
+  function drawGlass(quality = "full") {
     stage.dataset.glassRenderer = glassGL ? "webgl" : "simple";
-    if (glassLayer.builtVersion !== glassLayer.version) buildGlassLayer();
+    // Dist is only needed when silver will remold; skip it during live glass paint
+    // (remolding is deferred) and whenever there is no silver.
+    const needDist = quality === "full" && hasSilverStrokes();
+    const stale =
+      glassLayer.builtVersion !== glassLayer.version ||
+      (needDist && !glassLayer.hasDist && !glassLayer.empty) ||
+      (quality === "full" && glassLayer.builtQuality !== "full");
+    if (stale) buildGlassLayer(quality, { needDist });
     if (glassLayer.empty) return;
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1024,12 +1143,12 @@
     ctx.restore();
   }
 
-  /** quality "live" = fast, low-res metal (while drawing / dragging); "full" = settled. */
+  /** quality "live" = fast, low-res (while drawing / dragging); "full" = settled. */
   function render(quality = "full") {
     drawWorkbench();
     // Layer order: bench, glass, silver (silver sits over the stone)
     drawSelection("glass");
-    drawGlass();
+    drawGlass(quality);
     drawSelection("silver");
     drawMetal(quality);
   }
@@ -1052,7 +1171,8 @@
     const pts = activeStroke.points;
     if (pts.length === 0 || dist(pts[pts.length - 1], p) >= 1.4) {
       pts.push(p);
-      markDirty(activeStroke.kind);
+      // defer silver remold while painting glass; remold once on pointer up
+      markDirty(activeStroke.kind, { deferMetal: activeStroke.kind === "glass" });
       scheduleRender("live");
     }
   }
@@ -1153,7 +1273,7 @@
             pt.x += dx;
             pt.y += dy;
           }
-          markDirty(stroke.kind);
+          markDirty(stroke.kind, { deferMetal: stroke.kind === "glass" });
         }
       }
       drag.last = p;
@@ -1169,8 +1289,13 @@
         pushHistory();
         strokes.push(activeStroke);
       }
+      // settle: remold silver against the finished glass stroke
       markDirty(activeStroke.kind);
       activeStroke = null;
+    } else if (drag.kind === "move-stroke" && drag.moved) {
+      const stroke = strokes.find((s) => s.id === drag.strokeId);
+      // remold silver once after a glass move (live frames deferred it)
+      if (stroke && stroke.kind === "glass") markDirty("glass");
     }
 
     drag = null;
