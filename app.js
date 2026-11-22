@@ -4,12 +4,13 @@
   const canvas = document.getElementById("canvas");
   const ctx = canvas.getContext("2d", { alpha: false });
   const stage = document.querySelector(".stage");
-  const hint = document.getElementById("hint");
   const thicknessInput = document.getElementById("thickness");
   const undoBtn = document.getElementById("undo");
   const redoBtn = document.getElementById("redo");
   const deleteBtn = document.getElementById("delete");
   const clearBtn = document.getElementById("clear");
+  const metalBtn = document.getElementById("mode-draw");
+  const moveBtn = document.getElementById("mode-move");
 
   const swatchesEl = document.getElementById("swatches");
 
@@ -57,12 +58,6 @@
 
   /** @type {null | {kind: string, start: Pt, origin: object, last: Pt, strokeId?: number, moved?: boolean}} */
   let drag = null;
-
-  const HINTS = {
-    draw: "Draw silver over the glass. Let strokes touch or overlap and they melt into one mass. Switch to Move to reposition anything.",
-    glass: "Paint sea glass. Touching strokes of the same color fuse into one tumbled piece. Pick a color first.",
-    move: "Drag any stroke of silver or glass. Delete or ⌫ removes the selected stroke.",
-  };
 
   function cloneStrokes(list) {
     return list.map((s) => ({
@@ -121,7 +116,11 @@
   function syncChrome() {
     undoBtn.disabled = undoStack.length === 0 && !activeStroke;
     redoBtn.disabled = redoStack.length === 0;
-    deleteBtn.disabled = selectedId == null || mode !== "move";
+    const canDelete = selectedId != null && mode === "move";
+    deleteBtn.disabled = !canDelete;
+    deleteBtn.hidden = !canDelete;
+    const hasContent = strokes.length > 0 || !!activeStroke;
+    clearBtn.hidden = !hasContent;
   }
 
   function resize() {
@@ -203,18 +202,28 @@
     return null;
   }
 
+  function syncPalette() {
+    const drawOn = mode === "draw";
+    const moveOn = mode === "move";
+    metalBtn.classList.toggle("active", drawOn);
+    metalBtn.setAttribute("aria-pressed", String(drawOn));
+    moveBtn.classList.toggle("active", moveOn);
+    moveBtn.setAttribute("aria-pressed", String(moveOn));
+    swatchesEl.querySelectorAll(".swatch").forEach((b) => {
+      const on = mode === "glass" && b.dataset.color === glassColor;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-pressed", String(on));
+    });
+  }
+
   function setMode(next) {
     mode = next;
     stage.dataset.mode = next;
-    document.querySelectorAll(".mode").forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.mode === next);
-    });
     if (next !== "move") {
       selectedId = null;
       stage.classList.remove("over-object");
     }
-    hint.textContent = HINTS[next] || HINTS.draw;
-    swatchesEl.hidden = next !== "glass";
+    syncPalette();
     syncChrome();
     render();
   }
@@ -230,19 +239,18 @@
       b.setAttribute("aria-label", c.name);
       b.style.setProperty("--sw-light", c.light);
       b.style.setProperty("--sw-deep", c.deep);
-      b.addEventListener("click", () => selectGlassColor(c.id));
+      b.addEventListener("click", () => {
+        selectGlassColor(c.id);
+        setMode("glass");
+      });
       swatchesEl.appendChild(b);
     }
-    selectGlassColor(glassColor);
+    syncPalette();
   }
 
   function selectGlassColor(id) {
     glassColor = id;
-    swatchesEl.querySelectorAll(".swatch").forEach((b) => {
-      const on = b.dataset.color === id;
-      b.classList.toggle("active", on);
-      b.setAttribute("aria-pressed", String(on));
-    });
+    syncPalette();
   }
 
   function drawWorkbench() {
@@ -1325,9 +1333,8 @@
   deleteBtn.addEventListener("click", deleteSelected);
   clearBtn.addEventListener("click", clearAll);
 
-  document.querySelectorAll(".mode").forEach((btn) => {
-    btn.addEventListener("click", () => setMode(btn.dataset.mode));
-  });
+  metalBtn.addEventListener("click", () => setMode("draw"));
+  moveBtn.addEventListener("click", () => setMode("move"));
 
   window.addEventListener("keydown", (e) => {
     const meta = e.metaKey || e.ctrlKey;

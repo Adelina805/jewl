@@ -21,16 +21,27 @@
           <p>Your hands. Your eye. Your design.</p>
         </div>
         <div class="actions">
-          <button type="button" id="undo" class="ghost" title="Undo (⌘Z)">
-            Undo
+          <button type="button" id="undo" class="ghost" title="Undo (⌘Z)" aria-label="Undo">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 14L4 9l5-5" />
+              <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H14" />
+            </svg>
           </button>
-          <button type="button" id="redo" class="ghost" title="Redo (⌘⇧Z)">
-            Redo
+          <button type="button" id="redo" class="ghost" title="Redo (⌘⇧Z)" aria-label="Redo">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M15 14l5-5-5-5" />
+              <path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H10" />
+            </svg>
           </button>
-          <button type="button" id="delete" class="ghost" title="Delete selected stroke (⌫)" disabled>
-            Delete
+          <button type="button" id="delete" class="ghost" title="Delete selected stroke (⌫)" aria-label="Delete" hidden disabled>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 6h18" />
+              <path d="M8 6V4h8v2" />
+              <path d="M19 6l-1 14H6L5 6" />
+              <path d="M10 11v6M14 11v6" />
+            </svg>
           </button>
-          <button type="button" id="clear" class="ghost" title="Clear all silver and glass">
+          <button type="button" id="clear" class="ghost ghost-label" title="Clear all silver and glass" aria-label="Clear all" hidden>
             Clear
           </button>
         </div>
@@ -41,19 +52,35 @@
       </main>
 
       <footer class="chrome bottom">
-        <div class="modes" role="group" aria-label="Tool">
-          <button type="button" class="mode active" data-mode="draw" id="mode-draw">
-            Silver
-          </button>
-          <button type="button" class="mode" data-mode="glass" id="mode-glass">
-            Glass
-          </button>
-          <button type="button" class="mode" data-mode="move" id="mode-move">
-            Move
+        <div class="palette" role="group" aria-label="Tool">
+          <div class="palette-metals" role="group" aria-label="Metals">
+            <button
+              type="button"
+              class="swatch metal active"
+              data-mode="draw"
+              id="mode-draw"
+              title="Silver"
+              aria-label="Silver"
+              aria-pressed="true"
+            ></button>
+          </div>
+          <div class="palette-sep" aria-hidden="true"></div>
+          <div class="palette-glass swatches" id="swatches" role="group" aria-label="Glass color"></div>
+          <div class="palette-sep" aria-hidden="true"></div>
+          <button
+            type="button"
+            class="tool-move"
+            data-mode="move"
+            id="mode-move"
+            title="Move"
+            aria-label="Move"
+            aria-pressed="false"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4 4l7.07 17 2.51-7.39L21 11.07 4 4z" />
+            </svg>
           </button>
         </div>
-
-        <div class="swatches" id="swatches" role="group" aria-label="Glass color" hidden></div>
 
         <label class="thickness" for="thickness">
           <span>Weight</span>
@@ -67,10 +94,6 @@
             aria-valuemax="90"
           />
         </label>
-
-        <p class="hint" id="hint">
-          Draw silver over the glass. Switch to Move to reposition anything.
-        </p>
       </footer>
     </div>
     <script src="silver-gl.js"></script>
