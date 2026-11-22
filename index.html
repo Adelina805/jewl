@@ -51,48 +51,127 @@
       </main>
 
       <footer class="chrome bottom">
-        <div class="palette" role="group" aria-label="Tool">
-          <div class="palette-metals" role="group" aria-label="Metals">
+        <div class="dock" role="toolbar" aria-label="Drawing tools">
+          <div class="dock-tools" role="group" aria-label="Tools">
             <button
               type="button"
-              class="swatch metal active"
-              data-mode="draw"
-              id="mode-draw"
-              title="Silver"
-              aria-label="Silver"
+              class="tool-btn active"
+              data-tool="draw"
+              id="tool-draw"
+              title="Draw (D)"
+              aria-label="Draw"
               aria-pressed="true"
-            ></button>
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 19l7-7 3 3-7 7-3-3z" />
+                <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
+                <path d="M2 2l7.586 7.586" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="tool-btn"
+              data-tool="select"
+              id="tool-select"
+              title="Select (S)"
+              aria-label="Select"
+              aria-pressed="false"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M4 4l7.07 17 2.51-7.39L21 11.07 4 4z" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="tool-btn"
+              data-tool="erase"
+              id="tool-erase"
+              title="Eraser (E)"
+              aria-label="Eraser"
+              aria-pressed="false"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M7 21h10" />
+                <path d="M5.5 13.5L14 5a2.12 2.12 0 0 1 3 3l-8.5 8.5-4 .5.5-4z" />
+              </svg>
+            </button>
           </div>
-          <div class="palette-sep" aria-hidden="true"></div>
-          <div class="palette-glass swatches" id="swatches" role="group" aria-label="Glass color"></div>
-          <div class="palette-sep" aria-hidden="true"></div>
-          <button
-            type="button"
-            class="tool-move"
-            data-mode="move"
-            id="mode-move"
-            title="Move"
-            aria-label="Move"
-            aria-pressed="false"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M4 4l7.07 17 2.51-7.39L21 11.07 4 4z" />
-            </svg>
-          </button>
-        </div>
 
-        <label class="thickness" for="thickness">
-          <span>Weight</span>
-          <input
-            type="range"
-            id="thickness"
-            min="4"
-            max="90"
-            value="20"
-            aria-valuemin="4"
-            aria-valuemax="90"
-          />
-        </label>
+          <div class="dock-sep" aria-hidden="true"></div>
+
+          <div class="dock-materials" role="group" aria-label="Materials">
+            <div class="material-split" data-material="metal" id="metal-split">
+              <button
+                type="button"
+                class="material-main active"
+                id="metal-main"
+                title="Metal"
+                aria-label="Metal"
+                aria-pressed="true"
+              >
+                <span class="swatch metal" id="metal-swatch" aria-hidden="true"></span>
+                <span class="material-label">Metal</span>
+              </button>
+              <button
+                type="button"
+                class="material-chevron"
+                id="metal-chevron"
+                title="Metal presets"
+                aria-label="Metal presets"
+                aria-haspopup="true"
+                aria-expanded="false"
+                aria-controls="metal-library"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </button>
+              <div class="preset-library" id="metal-library" role="listbox" aria-label="Metal presets" hidden></div>
+            </div>
+
+            <div class="material-split" data-material="glass" id="glass-split">
+              <button
+                type="button"
+                class="material-main"
+                id="glass-main"
+                title="Glass"
+                aria-label="Glass"
+                aria-pressed="false"
+              >
+                <span class="swatch" id="glass-swatch" aria-hidden="true"></span>
+                <span class="material-label">Glass</span>
+              </button>
+              <button
+                type="button"
+                class="material-chevron"
+                id="glass-chevron"
+                title="Glass presets"
+                aria-label="Glass presets"
+                aria-haspopup="true"
+                aria-expanded="false"
+                aria-controls="glass-library"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </button>
+              <div class="preset-library" id="glass-library" role="listbox" aria-label="Glass presets" hidden></div>
+            </div>
+          </div>
+
+          <label class="thickness" for="thickness" id="size-control">
+            <span>Size</span>
+            <input
+              type="range"
+              id="thickness"
+              min="4"
+              max="90"
+              value="20"
+              aria-valuemin="4"
+              aria-valuemax="90"
+            />
+          </label>
+        </div>
       </footer>
     </div>
     <script src="silver-gl.js"></script>

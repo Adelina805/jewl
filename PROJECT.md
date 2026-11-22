@@ -10,14 +10,16 @@ Product commitment: no generative AI in the experience — every shape stays dir
 ## Current scope
 First working prototype:
 - One pendant canvas with a cool coastal workbench look
-- Paintable sea glass: a Glass tool with a five-color palette (seafoam, teal, cobalt, amber, frosted white)
-- Full-window canvas with header and controls floating over it
-- Freehand silver strokes; one shared Weight slider (4 to 90) drives both silver and glass, and keeps its value when you switch tools
-- Move mode: one tool to drag, select and delete any silver or glass stroke
-- Undo / redo / clear
-- Three modes (Silver · Glass · Move), so painting never accidentally moves anything
+- Compact bottom dock: Draw · Select · Eraser | Metal · Glass · Size
+- Paintable sea glass via Glass material presets (seafoam, teal, cobalt, amber, frosted white)
+- Metal material with placeholder presets (Silver, Gold, Rose gold); all still render as sterling for now
+- Full-window canvas with header and dock floating over it
+- Freehand Draw strokes; one shared Size slider (4 to 90) for Draw and Eraser, kept when switching tools
+- Select: drag, select, and delete any silver or glass stroke
+- Eraser: removes whole strokes under the brush
+- Undo / redo / clear (header)
 
-Out of scope for now: accounts, payments, manufacturing export, photo import, multi-stone library, AI generation.
+Out of scope for now: accounts, payments, manufacturing export / Download, photo import, multi-stone library, AI generation, straight-line tool (planned as straight strokes, not a measure tool).
 
 ## Decisions
 - **Stack:** Static HTML / CSS / Canvas 2D — no build step; fast path to drawing feel.
@@ -33,8 +35,8 @@ Out of scope for now: accounts, payments, manufacturing export, photo import, mu
   - Silver strokes lying entirely inside a glass piece (checked against a 1/4-res CPU readback of the distance layer) are not molded: they render in a separate pass on top. Both passes go into a cached `metal.layer` canvas.
   - Tunable via `WRAP` in `app.js` (`lipOverlap`, `bandWidth`, `displace`, `wet`, `bevel`, `tintBleed`, `seam`, `flattenGlass`, `flattenWidth`). Skipped on the CPU fallback and when glass uses the simple fallback.
 - **Workbench:** Slightly brighter studio field + upper-left key pool so metal has luminous surroundings to “reflect.”
-- **Interaction:** Silver · Glass · Move. In Move, pick order is silver stroke, then glass stroke, so thin silver stays grabbable over glass. Clicking empty canvas deselects. The color swatches only show in Glass mode. Shortcuts: `D`/`S` Silver, `G` Glass, `M` (also `E`/`P`) Move, ⌫ deletes the selected stroke.
-- **Layout:** The canvas is fixed to the full viewport; the header and footer are pointer-transparent except for their controls, so you can draw under them.
+- **Interaction:** Tools (Draw · Select · Eraser) are separate from materials (Metal · Glass). Draw paints with the active material; Select picks silver first then glass so thin silver stays grabbable; Eraser deletes whole strokes under a Size-radius brush (one undo entry per gesture). Clicking a Metal or Glass main control activates Draw with that material’s last-used preset; its chevron opens a compact scrolling preset library above the control (one library at a time; closes on select, outside click, or Escape). Selecting a preset activates that material immediately. Size stays visible in the dock for all tools. Shortcuts: `D` Draw, `S`/`M` Select, `E` Eraser, `G` Glass+Draw, ⌫ deletes the selected stroke in Select, Escape closes a library or deselects.
+- **Layout:** The canvas is fixed to the full viewport; the header and a centered bottom dock are pointer-transparent except for their controls, so you can draw under them. Undo / Redo / Clear stay in the header.
 - **History:** Undo/redo snapshots cover stroke create (silver and glass, with color), move, delete, and clear.
 
 ## Limitations
@@ -42,8 +44,9 @@ Out of scope for now: accounts, payments, manufacturing export, photo import, mu
 - Silver is a procedural height-field render, not a true 3D/PBR model — no real HDRI, only an approximate tint reflected from nearby glass (no true inter-reflection), not fabrication-accurate or exportable for casting.
 - Strokes fuse visually only; each stroke is still a separate object for Move/Delete, so moving one pulls it out of the blob.
 - The GPU field is capped at ~3.8M texels and 1.5 texels per CSS px, so very large canvases get a slightly coarser height/shadow field (the silhouette edge stays pixel-sharp).
-- Thin strokes on the bright bench need the dark underbelly/contact shadow to stay readable; very fine Weight can still look soft.
-- The shared Weight range (4 to 90) means silver can be set very thick, and fine silver widths take a little more precision on the longer slider.
+- Thin strokes on the bright bench need the dark underbelly/contact shadow to stay readable; very fine Size can still look soft.
+- The shared Size range (4 to 90) means silver can be set very thick, and fine silver widths take a little more precision on the slider.
+- Metal presets other than Silver are UI placeholders; strokes still use the sterling renderer.
 - No stylus pressure / tilt yet.
 - Molding is a 2D field effect, not a fluid simulation: displaced metal is roughly (not exactly) conserved, and metal drawn more than ~60 px inside a glass piece (in a stroke that also crosses its edge) is lost rather than pushed out.
 - Silver strokes that sit entirely inside glass (on top) and molded strokes render in separate passes, so they do not fuse with each other. A stroke switches between the two as soon as any part of it reaches the glass edge.
@@ -61,7 +64,7 @@ Out of scope for now: accounts, payments, manufacturing export, photo import, mu
 Silver looked like soft tubular gray / plastic, not polished sterling. References show high dynamic range (near-white highlights + charcoal recesses), bright bezel rims, and environment-driven contrast rather than muddy mid-gray.
 
 ## Verification
-- Local static server; UI loads; Silver / Move modes switch; undo / redo exercised.
+- Local static server; UI loads; Draw / Select / Eraser and Metal / Glass dock controls switch; undo / redo exercised.
 - Molding checked in the browser (853×672 viewport, synthetic pointer events, no console errors): a ring drawn over a teal pebble's edge ends up as a bezel hugging the edge; a stroke across a cobalt pebble splits and piles up at both crossings; a stroke just below an amber pebble wets up onto its edge; a thick C stroke half over a seafoam pebble molds into a C bezel; a squiggle inside a frosted piece sits on top. Pixel rows across the contacts show neutral, opaque chrome (no glass cast), a dark seam, then glass. Moving a stroke onto/off glass re-molds it; Delete, Undo and Redo re-render correctly, and undoing back to the start reproduces the original frame exactly. Not checked on a real display or with the CPU fallback.
 - Paintable glass checked in the browser (839×672 viewport) with synthetic pointer events and canvas pixel sampling: all five colors paint, same-color strokes fuse, different colors composite translucently, silver draws over glass, and Move (old spot cleared, new spot inked), select, Delete, Undo, Redo and Clear all work on glass strokes.
 - Not yet checked with a real mouse or trackpad: grab/grabbing cursor feel and handle hit comfort. The checks above used synthetic pointer events.

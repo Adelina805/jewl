@@ -9,13 +9,30 @@
   const redoBtn = document.getElementById("redo");
   const deleteBtn = document.getElementById("delete");
   const clearBtn = document.getElementById("clear");
-  const metalBtn = document.getElementById("mode-draw");
-  const moveBtn = document.getElementById("mode-move");
-
-  const swatchesEl = document.getElementById("swatches");
+  const dock = document.querySelector(".dock");
+  const drawBtn = document.getElementById("tool-draw");
+  const selectBtn = document.getElementById("tool-select");
+  const eraseBtn = document.getElementById("tool-erase");
+  const metalSplit = document.getElementById("metal-split");
+  const glassSplit = document.getElementById("glass-split");
+  const metalMain = document.getElementById("metal-main");
+  const glassMain = document.getElementById("glass-main");
+  const metalChevron = document.getElementById("metal-chevron");
+  const glassChevron = document.getElementById("glass-chevron");
+  const metalLibrary = document.getElementById("metal-library");
+  const glassLibrary = document.getElementById("glass-library");
+  const metalSwatch = document.getElementById("metal-swatch");
+  const glassSwatch = document.getElementById("glass-swatch");
 
   /** @typedef {{x:number,y:number}} Pt */
   /** @typedef {{id:number, kind: "silver"|"glass", color: string, points: Pt[], width: number}} Stroke */
+
+  // Placeholder metal presets. All still render as sterling until metal shaders land.
+  const METAL_PRESETS = [
+    { id: "silver", name: "Silver", light: "#f4f6f8", deep: "#7a8794" },
+    { id: "gold", name: "Gold", light: "#fff6d8", deep: "#b8892a" },
+    { id: "rose", name: "Rose gold", light: "#ffe8e2", deep: "#b57666" },
+  ];
 
   // Sea-glass palette. Tints are sRGB; "light" is the thin/frosted tone, "deep" the thick body.
   const GLASS_COLORS = [
@@ -35,7 +52,9 @@
     c.deepRgb = hexToRgb(c.deep);
   }
   const glassColorById = (id) => GLASS_COLORS.find((c) => c.id === id) || GLASS_COLORS[1];
+  const metalPresetById = (id) => METAL_PRESETS.find((c) => c.id === id) || METAL_PRESETS[0];
   let glassColor = "teal";
+  let metalPreset = "silver";
 
   /** @type {Stroke[]} */
   let strokes = [];
@@ -50,13 +69,18 @@
   /** @type {{strokes: Stroke[], selectedId: number|null}[]} */
   let redoStack = [];
 
-  let mode = "draw";
+  /** @type {"draw"|"select"|"erase"} */
+  let tool = "draw";
+  /** @type {"metal"|"glass"} */
+  let material = "metal";
+  /** @type {null | "metal" | "glass"} */
+  let openLibrary = null;
   let thickness = Number(thicknessInput.value);
   let dpr = 1;
   let width = 0;
   let height = 0;
 
-  /** @type {null | {kind: string, start: Pt, origin: object, last: Pt, strokeId?: number, moved?: boolean}} */
+  /** @type {null | {kind: string, start: Pt, origin: object, last: Pt, strokeId?: number, moved?: boolean, erased?: boolean}} */
   let drag = null;
 
   function cloneStrokes(list) {
@@ -116,11 +140,70 @@
   function syncChrome() {
     undoBtn.disabled = undoStack.length === 0 && !activeStroke;
     redoBtn.disabled = redoStack.length === 0;
-    const canDelete = selectedId != null && mode === "move";
+    const canDelete = selectedId != null && tool === "select";
     deleteBtn.disabled = !canDelete;
     deleteBtn.hidden = !canDelete;
     const hasContent = strokes.length > 0 || !!activeStroke;
     clearBtn.hidden = !hasContent;
+  }
+
+  function closeLibraries() {
+    if (openLibrary == null) return;
+    openLibrary = null;
+    metalLibrary.hidden = true;
+    glassLibrary.hidden = true;
+    metalChevron.setAttribute("aria-expanded", "false");
+    glassChevron.setAttribute("aria-expanded", "false");
+  }
+
+  function syncMaterialSwatches() {
+    const metal = metalPresetById(metalPreset);
+    metalSwatch.dataset.preset = metal.id;
+    metalSwatch.style.setProperty("--sw-light", metal.light);
+    metalSwatch.style.setProperty("--sw-deep", metal.deep);
+    metalMain.title = `${metal.name} metal`;
+    metalMain.setAttribute("aria-label", `${metal.name} metal`);
+
+    const glass = glassColorById(glassColor);
+    glassSwatch.style.setProperty("--sw-light", glass.light);
+    glassSwatch.style.setProperty("--sw-deep", glass.deep);
+    glassMain.title = `${glass.name} glass`;
+    glassMain.setAttribute("aria-label", `${glass.name} glass`);
+
+    metalLibrary.querySelectorAll(".preset-swatch").forEach((b) => {
+      const on = b.dataset.preset === metalPreset;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-selected", String(on));
+    });
+    glassLibrary.querySelectorAll(".preset-swatch").forEach((b) => {
+      const on = b.dataset.preset === glassColor;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-selected", String(on));
+    });
+  }
+
+  function syncDock() {
+    const toolBtns = [
+      [drawBtn, "draw"],
+      [selectBtn, "select"],
+      [eraseBtn, "erase"],
+    ];
+    for (const [btn, id] of toolBtns) {
+      const on = tool === id;
+      btn.classList.toggle("active", on);
+      btn.setAttribute("aria-pressed", String(on));
+    }
+
+    const metalOn = material === "metal";
+    const glassOn = material === "glass";
+    metalSplit.classList.toggle("active", metalOn);
+    glassSplit.classList.toggle("active", glassOn);
+    metalMain.classList.toggle("active", metalOn);
+    glassMain.classList.toggle("active", glassOn);
+    metalMain.setAttribute("aria-pressed", String(metalOn));
+    glassMain.setAttribute("aria-pressed", String(glassOn));
+
+    syncMaterialSwatches();
   }
 
   function resize() {
@@ -202,55 +285,125 @@
     return null;
   }
 
-  function syncPalette() {
-    const drawOn = mode === "draw";
-    const moveOn = mode === "move";
-    metalBtn.classList.toggle("active", drawOn);
-    metalBtn.setAttribute("aria-pressed", String(drawOn));
-    moveBtn.classList.toggle("active", moveOn);
-    moveBtn.setAttribute("aria-pressed", String(moveOn));
-    swatchesEl.querySelectorAll(".swatch").forEach((b) => {
-      const on = mode === "glass" && b.dataset.color === glassColor;
-      b.classList.toggle("active", on);
-      b.setAttribute("aria-pressed", String(on));
-    });
-  }
-
-  function setMode(next) {
-    mode = next;
-    stage.dataset.mode = next;
-    if (next !== "move") {
+  function setTool(next) {
+    if (tool === next) return;
+    tool = next;
+    stage.dataset.tool = next;
+    closeLibraries();
+    if (next !== "select") {
       selectedId = null;
       stage.classList.remove("over-object");
     }
-    syncPalette();
+    if (next !== "select") stage.classList.remove("dragging");
+    syncDock();
     syncChrome();
     render();
   }
 
-  function buildSwatches() {
-    swatchesEl.textContent = "";
-    for (const c of GLASS_COLORS) {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "swatch";
-      b.dataset.color = c.id;
-      b.title = c.name;
-      b.setAttribute("aria-label", c.name);
-      b.style.setProperty("--sw-light", c.light);
-      b.style.setProperty("--sw-deep", c.deep);
-      b.addEventListener("click", () => {
-        selectGlassColor(c.id);
-        setMode("glass");
-      });
-      swatchesEl.appendChild(b);
+  function setMaterial(next, opts = {}) {
+    material = next;
+    if (opts.draw !== false) tool = "draw";
+    stage.dataset.tool = tool;
+    if (tool !== "select") {
+      selectedId = null;
+      stage.classList.remove("over-object");
     }
-    syncPalette();
+    if (!opts.keepLibrary) closeLibraries();
+    syncDock();
+    syncChrome();
+    render();
+  }
+
+  function selectMetalPreset(id) {
+    metalPreset = id;
+    setMaterial("metal");
   }
 
   function selectGlassColor(id) {
     glassColor = id;
-    syncPalette();
+    setMaterial("glass");
+  }
+
+  function toggleLibrary(which) {
+    if (openLibrary === which) {
+      closeLibraries();
+      return;
+    }
+    openLibrary = which;
+    const isMetal = which === "metal";
+    metalLibrary.hidden = !isMetal;
+    glassLibrary.hidden = isMetal;
+    metalChevron.setAttribute("aria-expanded", String(isMetal));
+    glassChevron.setAttribute("aria-expanded", String(!isMetal));
+    syncMaterialSwatches();
+  }
+
+  function buildLibraries() {
+    metalLibrary.textContent = "";
+    for (const c of METAL_PRESETS) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "preset-swatch metal";
+      b.dataset.preset = c.id;
+      b.title = c.name;
+      b.setAttribute("aria-label", c.name);
+      b.setAttribute("role", "option");
+      b.style.setProperty("--sw-light", c.light);
+      b.style.setProperty("--sw-deep", c.deep);
+      b.addEventListener("click", () => selectMetalPreset(c.id));
+      metalLibrary.appendChild(b);
+    }
+
+    glassLibrary.textContent = "";
+    for (const c of GLASS_COLORS) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "preset-swatch";
+      b.dataset.preset = c.id;
+      b.title = c.name;
+      b.setAttribute("aria-label", c.name);
+      b.setAttribute("role", "option");
+      b.style.setProperty("--sw-light", c.light);
+      b.style.setProperty("--sw-deep", c.deep);
+      b.addEventListener("click", () => selectGlassColor(c.id));
+      glassLibrary.appendChild(b);
+    }
+
+    syncDock();
+  }
+
+  function eraseAt(p) {
+    const thresh = Math.max(8, thickness * 0.55);
+    let removed = false;
+    for (let i = strokes.length - 1; i >= 0; i--) {
+      const s = strokes[i];
+      const hitThresh = Math.max(thresh, s.width * 0.55);
+      const pts = s.points;
+      let hit = false;
+      if (pts.length === 1) hit = dist(p, pts[0]) <= hitThresh;
+      else {
+        for (let j = 1; j < pts.length; j++) {
+          if (distToSegment(p, pts[j - 1], pts[j]) <= hitThresh) {
+            hit = true;
+            break;
+          }
+        }
+      }
+      if (!hit) continue;
+      if (!drag.erased) {
+        pushHistory();
+        drag.erased = true;
+      }
+      const kind = s.kind;
+      strokes.splice(i, 1);
+      if (selectedId === s.id) selectedId = null;
+      markDirty(kind);
+      removed = true;
+    }
+    if (removed) {
+      syncChrome();
+      scheduleRender("live");
+    }
   }
 
   function drawWorkbench() {
@@ -1132,7 +1285,7 @@
 
   /** Halo behind the selected stroke; drawn at the layer the stroke lives on. */
   function drawSelection(kind) {
-    if (mode !== "move" || selectedId == null) return;
+    if (tool !== "select" || selectedId == null) return;
     const sel = strokes.find((st) => st.id === selectedId);
     if (!sel || sel.kind !== kind) return;
     ctx.save();
@@ -1210,11 +1363,12 @@
 
   function onPointerDown(e) {
     if (e.button !== undefined && e.button !== 0) return;
+    closeLibraries();
     const p = pointerPos(e);
     canvas.setPointerCapture(e.pointerId);
 
-    // Move mode — one tool for every stroke on the canvas (silver first, then glass).
-    if (mode === "move") {
+    // Select — pick, drag, and delete any stroke (silver first, then glass).
+    if (tool === "select") {
       const hit = hitStrokeAt(p);
       if (hit) {
         selectedId = hit.id;
@@ -1238,11 +1392,20 @@
       return;
     }
 
-    // Silver / Glass modes paint a new stroke; they never move anything
+    // Eraser — remove whole strokes under the brush; one undo entry per gesture.
+    if (tool === "erase") {
+      selectedId = null;
+      drag = { kind: "erase", start: p, origin: {}, last: p, erased: false };
+      eraseAt(p);
+      syncChrome();
+      return;
+    }
+
+    // Draw paints a new stroke with the active material; it never moves anything
     selectedId = null;
     activeStroke = {
       id: nextStrokeId++,
-      kind: mode === "glass" ? "glass" : "silver",
+      kind: material === "glass" ? "glass" : "silver",
       color: glassColor,
       points: [p],
       width: thickness,
@@ -1254,7 +1417,7 @@
   function onPointerMove(e) {
     const p = pointerPos(e);
 
-    if (mode === "move" && !drag) {
+    if (tool === "select" && !drag) {
       const over = hitStrokeAt(p);
       stage.classList.toggle("over-object", !!over);
     }
@@ -1263,6 +1426,12 @@
 
     if (drag.kind === "draw") {
       appendPoint(p);
+      drag.last = p;
+      return;
+    }
+
+    if (drag.kind === "erase") {
+      eraseAt(p);
       drag.last = p;
       return;
     }
@@ -1304,6 +1473,8 @@
       const stroke = strokes.find((s) => s.id === drag.strokeId);
       // remold silver once after a glass move (live frames deferred it)
       if (stroke && stroke.kind === "glass") markDirty("glass");
+    } else if (drag.kind === "erase" && drag.erased) {
+      markAllDirty();
     }
 
     drag = null;
@@ -1333,8 +1504,26 @@
   deleteBtn.addEventListener("click", deleteSelected);
   clearBtn.addEventListener("click", clearAll);
 
-  metalBtn.addEventListener("click", () => setMode("draw"));
-  moveBtn.addEventListener("click", () => setMode("move"));
+  drawBtn.addEventListener("click", () => setTool("draw"));
+  selectBtn.addEventListener("click", () => setTool("select"));
+  eraseBtn.addEventListener("click", () => setTool("erase"));
+
+  metalMain.addEventListener("click", () => setMaterial("metal"));
+  glassMain.addEventListener("click", () => setMaterial("glass"));
+  metalChevron.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleLibrary("metal");
+  });
+  glassChevron.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleLibrary("glass");
+  });
+
+  document.addEventListener("pointerdown", (e) => {
+    if (openLibrary == null) return;
+    if (dock.contains(e.target)) return;
+    closeLibraries();
+  });
 
   window.addEventListener("keydown", (e) => {
     const meta = e.metaKey || e.ctrlKey;
@@ -1352,7 +1541,7 @@
       return;
     }
 
-    if ((e.key === "Backspace" || e.key === "Delete") && mode === "move") {
+    if ((e.key === "Backspace" || e.key === "Delete") && tool === "select") {
       if (selectedId != null) {
         e.preventDefault();
         deleteSelected();
@@ -1361,10 +1550,15 @@
     }
 
     if (!meta && !e.altKey) {
-      if (key === "d" || key === "s") setMode("draw");
-      if (key === "g") setMode("glass");
-      if (key === "m" || key === "e" || key === "p") setMode("move");
+      if (key === "d") setTool("draw");
+      if (key === "s" || key === "m") setTool("select");
+      if (key === "e") setTool("erase");
+      if (key === "g") setMaterial("glass");
       if (key === "escape") {
+        if (openLibrary != null) {
+          closeLibraries();
+          return;
+        }
         selectedId = null;
         syncChrome();
         render();
@@ -1374,8 +1568,9 @@
 
   window.addEventListener("resize", resize);
 
-  buildSwatches();
-  setMode("draw");
+  buildLibraries();
+  stage.dataset.tool = tool;
+  syncDock();
   syncChrome();
   resize();
 })();
