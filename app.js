@@ -978,9 +978,8 @@
   /** @param {"live"|"full"} [quality] */
   function drawGlass(quality = "full") {
     stage.dataset.glassRenderer = glassGL ? "webgl" : "simple";
-    // Dist is only needed when silver will remold; skip it during live glass paint
-    // (remolding is deferred) and whenever there is no silver.
-    const needDist = quality === "full" && hasSilverStrokes();
+    // Dist lets silver wrap glass; keep it whenever silver exists (including live erase remolds).
+    const needDist = hasSilverStrokes();
     const stale =
       glassLayer.builtVersion !== glassLayer.version ||
       (needDist && !glassLayer.hasDist && !glassLayer.empty) ||
@@ -1339,14 +1338,11 @@
         const list = strokesOfKind("silver");
         // Live frames cap resolution (same budget as glass). Full settles at native DPR.
         const maxArea = quality === "live" ? SILVER.liveArea : 0;
-        // Glass molding + on-top probes are expensive; skip during live erase and settle on up.
-        const moldGlass =
-          quality === "full" || tool !== "erase"
-            ? glassGL && !glassLayer.empty && glassLayer.hasDist
-            : false;
-        const glass = moldGlass
-          ? { color: glassLayer.canvas, dist: glassLayer.dist, version: glassLayer.builtVersion }
-          : null;
+        // Glass molding stays on during live erase so metal does not unwrap mid-gesture.
+        const glass =
+          glassGL && !glassLayer.empty && glassLayer.hasDist
+            ? { color: glassLayer.canvas, dist: glassLayer.dist, version: glassLayer.builtVersion }
+            : null;
         const molded = [];
         const onTop = [];
         for (const s of list) (glass && isOnTop(s) ? onTop : molded).push(s);
