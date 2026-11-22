@@ -23,6 +23,7 @@
   const glassLibrary = document.getElementById("glass-library");
   const metalSwatch = document.getElementById("metal-swatch");
   const glassSwatch = document.getElementById("glass-swatch");
+  const eraseCursorEl = document.getElementById("erase-cursor");
 
   /** @typedef {{x:number,y:number}} Pt */
   /** @typedef {{id:number, kind: "silver"|"glass", color: string, points: Pt[], width: number}} Stroke */
@@ -402,6 +403,7 @@
     }
     if (next !== "select") stage.classList.remove("dragging");
     if (next !== "erase") eraseCursor = null;
+    syncEraseCursor();
     syncDock();
     syncChrome();
     render();
@@ -416,6 +418,7 @@
       stage.classList.remove("over-object");
     }
     if (tool !== "erase") eraseCursor = null;
+    syncEraseCursor();
     if (!opts.keepLibrary) closeLibraries();
     syncDock();
     syncChrome();
@@ -480,9 +483,13 @@
     syncDock();
   }
 
+  /**
+   * Punch through stroke geometry under the Size brush.
+   * Effective radius includes half the stroke width so thick fused material
+   * under the circle actually clears (centerline-only clips look too weak).
+   */
   function eraseAt(p) {
-    // Diameter matches Draw brush Size; punch a circle through stroke centerlines.
-    const radius = thickness / 2;
+    const brushR = thickness / 2;
     let changed = false;
     let clearedSelection = false;
     /** @type {Set<"silver"|"glass">} */
@@ -491,6 +498,8 @@
     const next = [];
 
     for (const s of strokes) {
+      // Expand by stroke radius so the visible tube under the brush is removed.
+      const radius = brushR + s.width * 0.5;
       if (!strokeIntersectsDisk(s, p, radius)) {
         next.push(s);
         continue;
@@ -525,30 +534,28 @@
       }
     }
 
-    if (changed) {
-      strokes = next;
-      for (const kind of dirtyKinds) {
-        // Defer silver remold while glass is live-erased; settle on pointer up.
-        markDirty(kind, { deferMetal: true });
-      }
-      if (clearedSelection) syncChrome();
-      scheduleRender("live");
+    if (!changed) return;
+
+    strokes = next;
+    if (clearedSelection) syncChrome();
+    for (const kind of dirtyKinds) {
+      // Defer silver remold while glass is live-erased; settle on pointer up.
+      markDirty(kind, { deferMetal: true });
     }
+    // Same cadence as draw: remold every sample so material vanishes immediately.
+    scheduleRender("live");
   }
 
-  function drawEraseCursor() {
-    if (tool !== "erase" || !eraseCursor) return;
-    const r = thickness / 2;
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(eraseCursor.x, eraseCursor.y, r, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.strokeStyle = "rgba(30, 40, 48, 0.7)";
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.restore();
+  function syncEraseCursor() {
+    if (tool !== "erase" || !eraseCursor) {
+      eraseCursorEl.hidden = true;
+      return;
+    }
+    const d = thickness;
+    eraseCursorEl.hidden = false;
+    eraseCursorEl.style.width = `${d}px`;
+    eraseCursorEl.style.height = `${d}px`;
+    eraseCursorEl.style.transform = `translate(${eraseCursor.x}px, ${eraseCursor.y}px) translate(-50%, -50%)`;
   }
 
   function drawWorkbench() {
@@ -1319,20 +1326,27 @@
     metal.builtQuality = quality;
   }
 
-  function drawMetalGL() {
+  function drawMetalGL(quality = "full") {
     if (silverGL.isLost()) {
       disableGL(new Error("WebGL context lost"));
       return false;
     }
-    if (metal.builtVersion !== metal.version) {
+    const stale =
+      metal.builtVersion !== metal.version ||
+      (quality === "full" && metal.builtQuality !== "full");
+    if (stale) {
       try {
         const list = strokesOfKind("silver");
-        // glass layer (color + edge distance) lets the glass mold the liquid metal;
-        // drawGlass() has already rebuilt it for this frame, so builtVersion is current
-        const glass =
-          glassGL && !glassLayer.empty && glassLayer.hasDist
-            ? { color: glassLayer.canvas, dist: glassLayer.dist, version: glassLayer.builtVersion }
-            : null;
+        // Live frames cap resolution (same budget as glass). Full settles at native DPR.
+        const maxArea = quality === "live" ? SILVER.liveArea : 0;
+        // Glass molding + on-top probes are expensive; skip during live erase and settle on up.
+        const moldGlass =
+          quality === "full" || tool !== "erase"
+            ? glassGL && !glassLayer.empty && glassLayer.hasDist
+            : false;
+        const glass = moldGlass
+          ? { color: glassLayer.canvas, dist: glassLayer.dist, version: glassLayer.builtVersion }
+          : null;
         const molded = [];
         const onTop = [];
         for (const s of list) (glass && isOnTop(s) ? onTop : molded).push(s);
@@ -1347,7 +1361,7 @@
           [onTop, null],
         ]) {
           if (group.length === 0) continue;
-          const r = silverGL.render(group, { ...SILVER, glass: g, wrap: WRAP });
+          const r = silverGL.render(group, { ...SILVER, maxArea, glass: g, wrap: WRAP });
           if (!r) continue;
           c.drawImage(silverGL.canvas, r.sx, r.sy, r.sw, r.sh, r.x * dpr, r.y * dpr, r.w * dpr, r.h * dpr);
           metal.glEmpty = false;
@@ -1357,6 +1371,7 @@
         return false;
       }
       metal.builtVersion = metal.version;
+      metal.builtQuality = quality;
     }
     if (metal.glEmpty) return true;
     ctx.save();
@@ -1411,7 +1426,7 @@
   }
 
   function drawMetal(quality) {
-    if (silverGL && drawMetalGL()) {
+    if (silverGL && drawMetalGL(quality)) {
       stage.dataset.renderer = "webgl";
       return;
     }
@@ -1457,7 +1472,6 @@
     drawGlass(quality);
     drawSelection("silver");
     drawMetal(quality);
-    drawEraseCursor();
   }
 
   let rafId = 0;
@@ -1543,10 +1557,10 @@
       const hadSelection = selectedId != null;
       selectedId = null;
       eraseCursor = p;
+      syncEraseCursor();
       drag = { kind: "erase", start: p, origin: {}, last: p, erased: false };
       eraseAt(p);
       if (hadSelection) syncChrome();
-      scheduleRender("live");
       return;
     }
 
@@ -1568,10 +1582,8 @@
 
     if (tool === "erase") {
       eraseCursor = p;
-      if (!drag) {
-        scheduleRender("live");
-        return;
-      }
+      syncEraseCursor();
+      if (!drag) return;
     }
 
     if (tool === "select" && !drag) {
@@ -1588,12 +1600,10 @@
     }
 
     if (drag.kind === "erase") {
-      // Throttle like appendPoint so we do not remold every sub-pixel move.
+      // Same sample spacing as draw so erase feedback keeps pace with painting.
       if (dist(drag.last, p) >= 1.4) {
         eraseAt(p);
         drag.last = p;
-      } else {
-        scheduleRender("live");
       }
       return;
     }
@@ -1636,6 +1646,7 @@
       // remold silver once after a glass move (live frames deferred it)
       if (stroke && stroke.kind === "glass") markDirty("glass");
     } else if (drag.kind === "erase" && drag.erased) {
+      // Settle at full quality (covers coalesced geometry that skipped live remolds).
       markAllDirty();
     }
 
@@ -1654,7 +1665,7 @@
   function onPointerLeave() {
     if (tool !== "erase" || drag) return;
     eraseCursor = null;
-    scheduleRender("live");
+    syncEraseCursor();
   }
 
   // Events
@@ -1666,7 +1677,7 @@
 
   thicknessInput.addEventListener("input", () => {
     thickness = Number(thicknessInput.value);
-    if (tool === "erase" && eraseCursor) scheduleRender("live");
+    if (tool === "erase") syncEraseCursor();
   });
 
   undoBtn.addEventListener("click", undo);

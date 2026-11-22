@@ -207,6 +207,23 @@ input[type="range"]:focus-visible {
   cursor: none;
 }
 
+.erase-cursor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid rgba(30, 40, 48, 0.75);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9);
+  pointer-events: none;
+  z-index: 1;
+  transform: translate(-50%, -50%);
+  will-change: transform, width, height;
+}
+
 .dock {
   position: relative;
   display: inline-flex;

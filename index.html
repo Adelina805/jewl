@@ -48,6 +48,7 @@
 
       <main class="stage">
         <canvas id="canvas" aria-label="Jewelry sketch canvas"></canvas>
+        <div id="erase-cursor" class="erase-cursor" hidden aria-hidden="true"></div>
       </main>
 
       <footer class="chrome bottom">
@@ -90,10 +91,9 @@
               aria-label="Eraser"
               aria-pressed="false"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path fill="currentColor" stroke="none" d="M16.24 3.56l4.2 4.2a2 2 0 010 2.83L9.17 21.86H4.14v-5.03L15.41 5.56a2 2 0 012.83 0z" />
-                <path fill="none" d="M14.12 6.85l4.03 4.03" />
-                <path fill="none" d="M4 21.86h16" />
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21" />
+                <path d="m5.082 11.09 8.828 8.828" />
               </svg>
             </button>
           </div>
