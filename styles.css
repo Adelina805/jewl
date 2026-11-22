@@ -115,6 +115,7 @@ button {
   border: 1px solid transparent;
   background: transparent;
   color: var(--ink);
+  touch-action: manipulation;
 }
 
 .ghost {
@@ -180,6 +181,7 @@ input[type="range"]:focus-visible {
   z-index: 0;
   pointer-events: auto;
   overflow: hidden;
+  touch-action: manipulation;
 }
 
 #canvas {
@@ -461,6 +463,7 @@ input[type="range"]:focus-visible {
   width: min(96px, 22vw);
   accent-color: #7d8b96;
   cursor: pointer;
+  touch-action: manipulation;
 }
 
 @media (max-width: 720px) {
