@@ -82,6 +82,8 @@
 
   /** @type {null | {kind: string, start: Pt, origin: object, last: Pt, strokeId?: number, moved?: boolean, erased?: boolean}} */
   let drag = null;
+  /** @type {Pt | null} */
+  let eraseCursor = null;
 
   function cloneStrokes(list) {
     return list.map((s) => ({
@@ -264,6 +266,110 @@
     return dist(p, { x: a.x + t * dx, y: a.y + t * dy });
   }
 
+  function pointInDisk(pt, center, r) {
+    return dist(pt, center) <= r;
+  }
+
+  /** Intersection points of segment a→b with circle (center, r), ordered along the segment. */
+  function segmentCircleHits(a, b, center, r) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const fx = a.x - center.x;
+    const fy = a.y - center.y;
+    const A = dx * dx + dy * dy;
+    if (A < 1e-12) return [];
+    const B = 2 * (fx * dx + fy * dy);
+    const C = fx * fx + fy * fy - r * r;
+    const disc = B * B - 4 * A * C;
+    if (disc < 0) return [];
+    const sqrt = Math.sqrt(disc);
+    const ts = [];
+    for (const sign of [-1, 1]) {
+      const t = (-B + sign * sqrt) / (2 * A);
+      if (t > 1e-6 && t < 1 - 1e-6) ts.push(t);
+    }
+    ts.sort((u, v) => u - v);
+    return ts.map((t) => ({ x: a.x + t * dx, y: a.y + t * dy }));
+  }
+
+  function strokeIntersectsDisk(s, center, r) {
+    const pts = s.points;
+    if (pts.length === 0) return false;
+    if (pts.length === 1) return pointInDisk(pts[0], center, r);
+    for (const pt of pts) {
+      if (pointInDisk(pt, center, r)) return true;
+    }
+    for (let j = 1; j < pts.length; j++) {
+      if (distToSegment(center, pts[j - 1], pts[j]) <= r) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Clip a polyline to the outside of a disk. Returns zero or more point lists
+   * (fragments that remain after punching the circle through the path).
+   */
+  function clipPolylineOutsideDisk(points, center, r) {
+    if (points.length === 0) return [];
+    if (points.length === 1) {
+      return pointInDisk(points[0], center, r)
+        ? []
+        : [[{ x: points[0].x, y: points[0].y }]];
+    }
+
+    /** @type {Pt[][]} */
+    const fragments = [];
+    /** @type {Pt[] | null} */
+    let current = null;
+
+    const copy = (pt) => ({ x: pt.x, y: pt.y });
+    const pushPt = (pt) => {
+      if (!current) {
+        current = [copy(pt)];
+        return;
+      }
+      const last = current[current.length - 1];
+      if (last.x !== pt.x || last.y !== pt.y) current.push(copy(pt));
+    };
+    const endFrag = () => {
+      if (current && current.length > 0) fragments.push(current);
+      current = null;
+    };
+
+    let prev = points[0];
+    let prevInside = pointInDisk(prev, center, r);
+    if (!prevInside) pushPt(prev);
+
+    for (let i = 1; i < points.length; i++) {
+      const curr = points[i];
+      const currInside = pointInDisk(curr, center, r);
+      const hits = segmentCircleHits(prev, curr, center, r);
+
+      if (!prevInside && !currInside) {
+        if (hits.length >= 2) {
+          pushPt(hits[0]);
+          endFrag();
+          pushPt(hits[hits.length - 1]);
+          pushPt(curr);
+        } else {
+          pushPt(curr);
+        }
+      } else if (!prevInside && currInside) {
+        if (hits.length > 0) pushPt(hits[0]);
+        endFrag();
+      } else if (prevInside && !currInside) {
+        if (hits.length > 0) pushPt(hits[hits.length - 1]);
+        pushPt(curr);
+      }
+      // both inside: discard this span
+
+      prev = curr;
+      prevInside = currInside;
+    }
+    endFrag();
+    return fragments;
+  }
+
   function strokeHit(s, p) {
     const thresh = Math.max(8, s.width * 0.55);
     const pts = s.points;
@@ -295,6 +401,7 @@
       stage.classList.remove("over-object");
     }
     if (next !== "select") stage.classList.remove("dragging");
+    if (next !== "erase") eraseCursor = null;
     syncDock();
     syncChrome();
     render();
@@ -308,6 +415,7 @@
       selectedId = null;
       stage.classList.remove("over-object");
     }
+    if (tool !== "erase") eraseCursor = null;
     if (!opts.keepLibrary) closeLibraries();
     syncDock();
     syncChrome();
@@ -373,37 +481,74 @@
   }
 
   function eraseAt(p) {
-    const thresh = Math.max(8, thickness * 0.55);
-    let removed = false;
-    for (let i = strokes.length - 1; i >= 0; i--) {
-      const s = strokes[i];
-      const hitThresh = Math.max(thresh, s.width * 0.55);
-      const pts = s.points;
-      let hit = false;
-      if (pts.length === 1) hit = dist(p, pts[0]) <= hitThresh;
-      else {
-        for (let j = 1; j < pts.length; j++) {
-          if (distToSegment(p, pts[j - 1], pts[j]) <= hitThresh) {
-            hit = true;
-            break;
-          }
-        }
+    // Diameter matches Draw brush Size; punch a circle through stroke centerlines.
+    const radius = thickness / 2;
+    let changed = false;
+    let clearedSelection = false;
+    /** @type {Set<"silver"|"glass">} */
+    const dirtyKinds = new Set();
+    /** @type {Stroke[]} */
+    const next = [];
+
+    for (const s of strokes) {
+      if (!strokeIntersectsDisk(s, p, radius)) {
+        next.push(s);
+        continue;
       }
-      if (!hit) continue;
+
+      const frags = clipPolylineOutsideDisk(s.points, p, radius);
       if (!drag.erased) {
         pushHistory();
         drag.erased = true;
       }
-      const kind = s.kind;
-      strokes.splice(i, 1);
-      if (selectedId === s.id) selectedId = null;
-      markDirty(kind);
-      removed = true;
+      changed = true;
+      dirtyKinds.add(s.kind);
+
+      if (frags.length === 0) {
+        if (selectedId === s.id) {
+          selectedId = null;
+          clearedSelection = true;
+        }
+        continue;
+      }
+
+      s.points = frags[0];
+      next.push(s);
+      for (let f = 1; f < frags.length; f++) {
+        next.push({
+          id: nextStrokeId++,
+          kind: s.kind,
+          color: s.color,
+          width: s.width,
+          points: frags[f],
+        });
+      }
     }
-    if (removed) {
-      syncChrome();
+
+    if (changed) {
+      strokes = next;
+      for (const kind of dirtyKinds) {
+        // Defer silver remold while glass is live-erased; settle on pointer up.
+        markDirty(kind, { deferMetal: true });
+      }
+      if (clearedSelection) syncChrome();
       scheduleRender("live");
     }
+  }
+
+  function drawEraseCursor() {
+    if (tool !== "erase" || !eraseCursor) return;
+    const r = thickness / 2;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(eraseCursor.x, eraseCursor.y, r, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(30, 40, 48, 0.7)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
   }
 
   function drawWorkbench() {
@@ -1312,6 +1457,7 @@
     drawGlass(quality);
     drawSelection("silver");
     drawMetal(quality);
+    drawEraseCursor();
   }
 
   let rafId = 0;
@@ -1392,12 +1538,15 @@
       return;
     }
 
-    // Eraser — remove whole strokes under the brush; one undo entry per gesture.
+    // Eraser — punch a Size-scaled circle through strokes; one undo entry per gesture.
     if (tool === "erase") {
+      const hadSelection = selectedId != null;
       selectedId = null;
+      eraseCursor = p;
       drag = { kind: "erase", start: p, origin: {}, last: p, erased: false };
       eraseAt(p);
-      syncChrome();
+      if (hadSelection) syncChrome();
+      scheduleRender("live");
       return;
     }
 
@@ -1417,6 +1566,14 @@
   function onPointerMove(e) {
     const p = pointerPos(e);
 
+    if (tool === "erase") {
+      eraseCursor = p;
+      if (!drag) {
+        scheduleRender("live");
+        return;
+      }
+    }
+
     if (tool === "select" && !drag) {
       const over = hitStrokeAt(p);
       stage.classList.toggle("over-object", !!over);
@@ -1431,8 +1588,13 @@
     }
 
     if (drag.kind === "erase") {
-      eraseAt(p);
-      drag.last = p;
+      // Throttle like appendPoint so we do not remold every sub-pixel move.
+      if (dist(drag.last, p) >= 1.4) {
+        eraseAt(p);
+        drag.last = p;
+      } else {
+        scheduleRender("live");
+      }
       return;
     }
 
@@ -1489,14 +1651,22 @@
     }
   }
 
+  function onPointerLeave() {
+    if (tool !== "erase" || drag) return;
+    eraseCursor = null;
+    scheduleRender("live");
+  }
+
   // Events
   canvas.addEventListener("pointerdown", onPointerDown);
   canvas.addEventListener("pointermove", onPointerMove);
   canvas.addEventListener("pointerup", onPointerUp);
   canvas.addEventListener("pointercancel", onPointerUp);
+  canvas.addEventListener("pointerleave", onPointerLeave);
 
   thicknessInput.addEventListener("input", () => {
     thickness = Number(thicknessInput.value);
+    if (tool === "erase" && eraseCursor) scheduleRender("live");
   });
 
   undoBtn.addEventListener("click", undo);

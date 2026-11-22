@@ -204,7 +204,7 @@ input[type="range"]:focus-visible {
 }
 
 .stage[data-tool="erase"] #canvas {
-  cursor: crosshair;
+  cursor: none;
 }
 
 .dock {
