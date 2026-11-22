@@ -8,6 +8,7 @@
   const undoBtn = document.getElementById("undo");
   const redoBtn = document.getElementById("redo");
   const deleteBtn = document.getElementById("delete");
+  const duplicateBtn = document.getElementById("duplicate");
   const clearBtn = document.getElementById("clear");
   const dock = document.querySelector(".dock");
   const drawBtn = document.getElementById("tool-draw");
@@ -64,6 +65,8 @@
   /** @type {number | null} */
   let selectedId = null;
   let nextStrokeId = 1;
+  /** @type {Stroke | null} */
+  let strokeClipboard = null;
 
   /** @type {{strokes: Stroke[], selectedId: number|null}[]} */
   let undoStack = [];
@@ -146,6 +149,8 @@
     const canDelete = selectedId != null && tool === "select";
     deleteBtn.disabled = !canDelete;
     deleteBtn.hidden = !canDelete;
+    duplicateBtn.disabled = !canDelete;
+    duplicateBtn.hidden = !canDelete;
     const hasContent = strokes.length > 0 || !!activeStroke;
     clearBtn.hidden = !hasContent;
   }
@@ -1504,6 +1509,58 @@
     render();
   }
 
+  const PASTE_OFFSET = 16;
+
+  function cloneStrokeForClipboard(s) {
+    return {
+      id: s.id,
+      kind: s.kind,
+      color: s.color,
+      width: s.width,
+      points: s.points.map((p) => ({ x: p.x, y: p.y })),
+    };
+  }
+
+  function pasteStrokeFromData(data, { offsetX = PASTE_OFFSET, offsetY = PASTE_OFFSET } = {}) {
+    pushHistory();
+    const clone = {
+      id: nextStrokeId++,
+      kind: data.kind,
+      color: data.color,
+      width: data.width,
+      points: data.points.map((p) => ({ x: p.x + offsetX, y: p.y + offsetY })),
+    };
+    strokes.push(clone);
+    selectedId = clone.id;
+    syncChrome();
+    markDirty(clone.kind);
+    render();
+    return clone;
+  }
+
+  function copySelected() {
+    if (tool !== "select" || selectedId == null) return false;
+    const s = strokes.find((st) => st.id === selectedId);
+    if (!s) return false;
+    strokeClipboard = cloneStrokeForClipboard(s);
+    return true;
+  }
+
+  function pasteClipboard() {
+    if (strokeClipboard == null) return false;
+    if (tool !== "select") setTool("select");
+    pasteStrokeFromData(strokeClipboard);
+    return true;
+  }
+
+  function duplicateSelected() {
+    if (tool !== "select" || selectedId == null) return false;
+    const s = strokes.find((st) => st.id === selectedId);
+    if (!s) return false;
+    pasteStrokeFromData(s);
+    return true;
+  }
+
   function clearAll() {
     if (strokes.length === 0 && !activeStroke) return;
     pushHistory();
@@ -1678,6 +1735,7 @@
   undoBtn.addEventListener("click", undo);
   redoBtn.addEventListener("click", redo);
   deleteBtn.addEventListener("click", deleteSelected);
+  duplicateBtn.addEventListener("click", duplicateSelected);
   clearBtn.addEventListener("click", clearAll);
 
   drawBtn.addEventListener("click", () => setTool("draw"));
@@ -1722,6 +1780,19 @@
         e.preventDefault();
         deleteSelected();
       }
+      return;
+    }
+
+    if (meta && key === "c") {
+      if (copySelected()) e.preventDefault();
+      return;
+    }
+    if (meta && key === "v") {
+      if (pasteClipboard()) e.preventDefault();
+      return;
+    }
+    if (meta && key === "d") {
+      if (duplicateSelected()) e.preventDefault();
       return;
     }
 
