@@ -329,6 +329,10 @@ input[type="range"]:focus-visible {
     height: 2.1rem;
   }
 
+  .ghost.ghost-label {
+    height: 2.1rem;
+  }
+
   .palette {
     gap: 0.35rem;
     padding: 0.28rem 0.35rem;
