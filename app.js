@@ -485,8 +485,8 @@
 
   /**
    * Punch through stroke geometry under the Size brush.
-   * Effective radius includes half the stroke width so thick fused material
-   * under the circle actually clears (centerline-only clips look too weak).
+   * Hit radius matches the visible erase ring (thickness / 2). Thick strokes may
+   * leave a thin remnant under the ring; bump Size or pass again to clear it.
    */
   function eraseAt(p) {
     const brushR = thickness / 2;
@@ -498,8 +498,7 @@
     const next = [];
 
     for (const s of strokes) {
-      // Expand by stroke radius so the visible tube under the brush is removed.
-      const radius = brushR + s.width * 0.5;
+      const radius = brushR;
       if (!strokeIntersectsDisk(s, p, radius)) {
         next.push(s);
         continue;
