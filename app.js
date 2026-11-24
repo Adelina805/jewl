@@ -10,6 +10,7 @@
   const deleteBtn = document.getElementById("delete");
   const duplicateBtn = document.getElementById("duplicate");
   const clearBtn = document.getElementById("clear");
+  const downloadBtn = document.getElementById("download");
   const dock = document.querySelector(".dock");
   const drawBtn = document.getElementById("tool-draw");
   const selectBtn = document.getElementById("tool-select");
@@ -1573,6 +1574,29 @@
     render();
   }
 
+  function downloadPng() {
+    if (activeStroke || drag) return;
+
+    const prevSelected = selectedId;
+    selectedId = null;
+    render("full");
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    canvas.toBlob((blob) => {
+      selectedId = prevSelected;
+      render("full");
+      syncChrome();
+      if (!blob) return;
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `jewl-${stamp}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }, "image/png");
+  }
+
   function onPointerDown(e) {
     if (e.button !== undefined && e.button !== 0) return;
     closeLibraries();
@@ -1737,6 +1761,7 @@
   deleteBtn.addEventListener("click", deleteSelected);
   duplicateBtn.addEventListener("click", duplicateSelected);
   clearBtn.addEventListener("click", clearAll);
+  downloadBtn.addEventListener("click", downloadPng);
 
   drawBtn.addEventListener("click", () => setTool("draw"));
   selectBtn.addEventListener("click", () => setTool("select"));
