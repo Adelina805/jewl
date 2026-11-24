@@ -31,10 +31,14 @@
   /** @typedef {{id:number, kind: "silver"|"glass", color: string, points: Pt[], width: number}} Stroke */
 
   // Placeholder metal presets. All still render as sterling until metal shaders land.
+  // Library grid (3 cols) order: gold, rose gold, rainbow / silver, dark gray, black.
   const METAL_PRESETS = [
-    { id: "silver", name: "Silver", light: "#f4f6f8", deep: "#7a8794" },
     { id: "gold", name: "Gold", light: "#fff6d8", deep: "#b8892a" },
     { id: "rose", name: "Rose gold", light: "#ffe8e2", deep: "#b57666" },
+    { id: "rainbow", name: "Rainbow", light: "#e85d5d", deep: "#5a9fe8" },
+    { id: "silver", name: "Silver", light: "#f4f6f8", deep: "#7a8794" },
+    { id: "dark-gray", name: "Dark gray", light: "#8a8e96", deep: "#3a3e46" },
+    { id: "black", name: "Black", light: "#4a4a4e", deep: "#0a0a0c" },
   ];
 
   // Sea-glass palette. Tints are sRGB; "light" is the thin/frosted tone, "deep" the thick body.
