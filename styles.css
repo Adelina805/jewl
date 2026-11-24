@@ -346,7 +346,7 @@ input[type="range"]:focus-visible {
   flex-shrink: 0;
   border-radius: 50%;
   border: 1px solid rgba(28, 36, 44, 0.22);
-  background: linear-gradient(135deg, var(--sw-light, #d2ebf5), var(--sw-deep, #6ea8c4));
+  background: linear-gradient(135deg, var(--sw-light, #c5ebe8), var(--sw-deep, #4fa8a8));
   box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.6);
 }
 

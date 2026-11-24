@@ -38,13 +38,15 @@
   ];
 
   // Sea-glass palette. Tints are sRGB; "light" is the thin/frosted tone, "deep" the thick body.
+  // Library grid (3 cols) order: green, amber, custom / pale blue, white, deep blue.
   const GLASS_COLORS = [
-    { id: "pale-blue", name: "Pale blue", light: "#d2ebf5", deep: "#6ea8c4" },
+    { id: "deep-green", name: "Deep green", light: "#5aaa72", deep: "#0f4a28" },
+    { id: "amber", name: "Amber", light: "#c99858", deep: "#5c3010" },
+    { id: "pale-blue", name: "Pale blue", light: "#c5ebe8", deep: "#4fa8a8" },
     { id: "white", name: "White", light: "#f6f8f8", deep: "#c2ced2" },
-    { id: "deep-green", name: "Deep green", light: "#7ec48c", deep: "#1f6b3c" },
-    { id: "deep-blue", name: "Deep blue", light: "#6a8fd4", deep: "#1e3f8f" },
-    { id: "amber", name: "Amber", light: "#e8c078", deep: "#8b5218" },
+    { id: "deep-blue", name: "Deep blue", light: "#4a78c8", deep: "#122f78" },
   ];
+  const DEFAULT_GLASS_COLOR = "pale-blue";
   const hexToRgb = (h) => [
     parseInt(h.slice(1, 3), 16) / 255,
     parseInt(h.slice(3, 5), 16) / 255,
@@ -77,10 +79,13 @@
   }
   const glassColorById = (id) => {
     if (isCustomGlassHex(id)) return tintPairFromHex(id.toLowerCase());
-    return GLASS_COLORS.find((c) => c.id === id) || GLASS_COLORS[0];
+    return (
+      GLASS_COLORS.find((c) => c.id === id) ||
+      GLASS_COLORS.find((c) => c.id === DEFAULT_GLASS_COLOR)
+    );
   };
   const metalPresetById = (id) => METAL_PRESETS.find((c) => c.id === id) || METAL_PRESETS[0];
-  let glassColor = "pale-blue";
+  let glassColor = DEFAULT_GLASS_COLOR;
   /** Last custom hex for the color input; strokes store the hex directly in `color`. */
   let customGlassHex = "#c45a7a";
   let metalPreset = "silver";
@@ -525,7 +530,8 @@
     }
 
     glassLibrary.textContent = "";
-    for (const c of GLASS_COLORS) {
+
+    const appendGlassPreset = (c) => {
       const b = document.createElement("button");
       b.type = "button";
       b.className = "preset-swatch";
@@ -537,7 +543,11 @@
       b.style.setProperty("--sw-deep", c.deep);
       b.addEventListener("click", () => selectGlassColor(c.id));
       glassLibrary.appendChild(b);
-    }
+    };
+
+    // Top row: green, brown, rainbow — bottom: pale blue, white, deep blue
+    appendGlassPreset(GLASS_COLORS.find((c) => c.id === "deep-green"));
+    appendGlassPreset(GLASS_COLORS.find((c) => c.id === "amber"));
 
     const customBtn = document.createElement("button");
     customBtn.type = "button";
@@ -548,6 +558,10 @@
     customBtn.setAttribute("role", "option");
     customBtn.addEventListener("click", () => openCustomGlassPicker());
     glassLibrary.appendChild(customBtn);
+
+    appendGlassPreset(GLASS_COLORS.find((c) => c.id === "pale-blue"));
+    appendGlassPreset(GLASS_COLORS.find((c) => c.id === "white"));
+    appendGlassPreset(GLASS_COLORS.find((c) => c.id === "deep-blue"));
 
     glassColorInput = document.createElement("input");
     glassColorInput.type = "color";
