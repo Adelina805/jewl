@@ -369,17 +369,8 @@ input[type="range"]:focus-visible {
     linear-gradient(145deg, #b0b4bc 0%, #6a7078 38%, #3a3e46 62%, #8a8e96 100%);
 }
 
-.swatch.metal[data-preset="rainbow"] {
-  background: conic-gradient(
-    from 210deg,
-    #e85d5d,
-    #e8a84a,
-    #e8e05a,
-    #5dcf7a,
-    #5a9fe8,
-    #8a6ae8,
-    #e85d5d
-  );
+.swatch.metal[data-preset="custom"] {
+  background: linear-gradient(135deg, var(--sw-light), var(--sw-deep));
   box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.45);
 }
 
@@ -443,14 +434,88 @@ input[type="range"]:focus-visible {
   box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.45);
 }
 
-.glass-color-input {
+.color-picker {
   position: absolute;
-  width: 0;
-  height: 0;
-  opacity: 0;
+  left: 50%;
+  bottom: calc(100% + 0.55rem + 4.35rem);
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  width: 9.5rem;
+  padding: 0.5rem;
+  border-radius: 0.85rem;
+  background: var(--chrome);
+  border: 1px solid var(--chrome-border);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 8px 24px rgba(28, 36, 44, 0.12);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.color-picker[hidden] {
+  display: none;
+}
+
+.color-picker-preview {
+  width: 100%;
+  height: 1.1rem;
+  border-radius: 0.4rem;
+  border: 1px solid rgba(28, 36, 44, 0.18);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.35);
+}
+
+.color-picker-sv {
+  position: relative;
+  width: 100%;
+  height: 7.5rem;
+  border-radius: 0.45rem;
+  border: 1px solid rgba(28, 36, 44, 0.18);
+  cursor: crosshair;
+  background:
+    linear-gradient(to top, #000, transparent),
+    linear-gradient(to right, #fff, var(--picker-hue, #ff0000));
+  touch-action: none;
+}
+
+.color-picker-sv-knob,
+.color-picker-hue-knob {
+  position: absolute;
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(28, 36, 44, 0.55), 0 1px 3px rgba(28, 36, 44, 0.25);
   pointer-events: none;
-  border: 0;
-  padding: 0;
+  transform: translate(-50%, -50%);
+}
+
+.color-picker-hue {
+  position: relative;
+  width: 100%;
+  height: 1.35rem;
+  border-radius: 0.45rem;
+  border: 1px solid rgba(28, 36, 44, 0.18);
+  cursor: ew-resize;
+  background: linear-gradient(
+    to right,
+    #f00,
+    #ff0,
+    #0f0,
+    #0ff,
+    #00f,
+    #f0f,
+    #f00
+  );
+  touch-action: none;
+}
+
+.color-picker-hue-knob {
+  top: 50%;
+  transform: translate(-50%, -50%);
 }
 
 .preset-swatch.metal {
@@ -472,7 +537,7 @@ input[type="range"]:focus-visible {
     linear-gradient(145deg, #b0b4bc 0%, #6a7078 38%, #3a3e46 62%, #8a8e96 100%);
 }
 
-.preset-swatch.metal[data-preset="rainbow"] {
+.preset-swatch.metal.custom {
   background: conic-gradient(
     from 210deg,
     #e85d5d,
@@ -496,13 +561,6 @@ input[type="range"]:focus-visible {
     linear-gradient(145deg, #ffe8e2 0%, #e0a898 38%, #b57666 62%, #f2d4cc 100%);
 }
 
-.preset-swatch.metal[data-preset="rainbow"].active {
-  box-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, 0.45),
-    0 0 0 2px #f2f5f7,
-    0 0 0 3.5px rgba(28, 36, 44, 0.8);
-}
-
 .preset-swatch:hover {
   transform: scale(1.1);
 }
@@ -517,6 +575,13 @@ input[type="range"]:focus-visible {
   box-shadow:
     inset 0 1px 1px rgba(255, 255, 255, 0.85),
     inset 0 -1px 2px rgba(28, 36, 44, 0.18),
+    0 0 0 2px #f2f5f7,
+    0 0 0 3.5px rgba(28, 36, 44, 0.8);
+}
+
+.preset-swatch.metal.custom.active {
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.45),
     0 0 0 2px #f2f5f7,
     0 0 0 3.5px rgba(28, 36, 44, 0.8);
 }

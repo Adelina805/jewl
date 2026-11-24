@@ -12,7 +12,7 @@ First working prototype:
 - One pendant canvas with a cool coastal workbench look
 - Compact bottom dock: Draw · Select · Eraser | Metal · Glass · Size
 - Paintable sea glass via Glass material presets (seafoam, teal, cobalt, amber, frosted white)
-- Metal material with placeholder presets (Silver, Gold, Rose gold); all still render as sterling for now
+- Metal material with placeholder presets (Silver, Gold, Rose gold, Dark gray, Black) plus a custom HSV color; all still render as sterling for now
 - Full-window canvas with header and dock floating over it
 - Freehand Draw strokes; one shared Size slider (4 to 90) for Draw and Eraser, kept when switching tools
 - Select: drag, select, and delete any silver or glass stroke
@@ -35,7 +35,7 @@ Out of scope for now: accounts, payments, manufacturing export / Download, photo
   - Silver strokes lying entirely inside a glass piece (checked against a 1/4-res CPU readback of the distance layer) are not molded: they render in a separate pass on top. Both passes go into a cached `metal.layer` canvas.
   - Tunable via `WRAP` in `app.js` (`lipOverlap`, `bandWidth`, `displace`, `wet`, `bevel`, `tintBleed`, `seam`, `flattenGlass`, `flattenWidth`). Skipped on the CPU fallback and when glass uses the simple fallback.
 - **Workbench:** Slightly brighter studio field + upper-left key pool so metal has luminous surroundings to “reflect.”
-- **Interaction:** Tools (Draw · Select · Eraser) are separate from materials (Metal · Glass). Draw paints with the active material; Select picks silver first then glass so thin silver stays grabbable; Eraser punches a Size-diameter circle through stroke geometry, splitting or trimming rather than deleting whole strokes (one undo entry per gesture). Clicking a Metal or Glass main control activates Draw with that material’s last-used preset; its chevron opens a compact scrolling preset library above the control (one library at a time; closes on select, outside click, or Escape). Selecting a preset activates that material immediately. Size stays visible in the dock for all tools. Shortcuts: `D` Draw, `S`/`M` Select, `E` Eraser, `G` Glass+Draw, ⌫ deletes the selected stroke in Select, ⌘/Ctrl+C copies, ⌘/Ctrl+V pastes (16 px offset; switches to Select), ⌘/Ctrl+D duplicates the selection, Escape closes a library or deselects.
+- **Interaction:** Tools (Draw · Select · Eraser) are separate from materials (Metal · Glass). Draw paints with the active material; Select picks silver first then glass so thin silver stays grabbable; Eraser punches a Size-diameter circle through stroke geometry, splitting or trimming rather than deleting whole strokes (one undo entry per gesture). Clicking a Metal or Glass main control activates Draw with that material’s last-used preset; its chevron opens a compact scrolling preset library above the control (one library at a time; closes on select, outside click, or Escape). Selecting a preset activates that material immediately. The rainbow “Custom” swatch on Metal and Glass opens an in-app HSV picker (saturation/value pad + hue strip) instead of the system `input[type=color]`, so it works on mobile browsers; glass custom hex tints the sea-glass render, while metal custom is UI-only until metal shaders land. Size stays visible in the dock for all tools. Shortcuts: `D` Draw, `S`/`M` Select, `E` Eraser, `G` Glass+Draw, ⌫ deletes the selected stroke in Select, ⌘/Ctrl+C copies, ⌘/Ctrl+V pastes (16 px offset; switches to Select), ⌘/Ctrl+D duplicates the selection, Escape closes a library or deselects.
 - **Layout:** The canvas is fixed to the full viewport; the header and a centered bottom dock are pointer-transparent except for their controls, so you can draw under them. Undo / Redo / Clear stay in the header.
 - **History:** Undo/redo snapshots cover stroke create (silver and glass, with color), move, delete, paste, duplicate, and clear.
 
@@ -46,7 +46,7 @@ Out of scope for now: accounts, payments, manufacturing export / Download, photo
 - The GPU field is capped at ~3.8M texels and 1.5 texels per CSS px, so very large canvases get a slightly coarser height/shadow field (the silhouette edge stays pixel-sharp).
 - Thin strokes on the bright bench need the dark underbelly/contact shadow to stay readable; very fine Size can still look soft.
 - The shared Size range (4 to 90) means silver can be set very thick, and fine silver widths take a little more precision on the slider.
-- Metal presets other than Silver are UI placeholders; strokes still use the sterling renderer.
+- Metal presets other than Silver (including custom HSV colors) are UI placeholders; strokes still use the sterling renderer.
 - No stylus pressure / tilt yet.
 - Molding is a 2D field effect, not a fluid simulation: displaced metal is roughly (not exactly) conserved, and metal drawn more than ~60 px inside a glass piece (in a stroke that also crosses its edge) is lost rather than pushed out.
 - Silver strokes that sit entirely inside glass (on top) and molded strokes render in separate passes, so they do not fuse with each other. A stroke switches between the two as soon as any part of it reaches the glass edge.

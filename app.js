@@ -31,15 +31,15 @@
   /** @typedef {{id:number, kind: "silver"|"glass", color: string, points: Pt[], width: number}} Stroke */
 
   // Placeholder metal presets. All still render as sterling until metal shaders land.
-  // Library grid (3 cols) order: gold, rose gold, rainbow / silver, dark gray, black.
+  // Library grid (3 cols) order: gold, rose gold, custom / silver, dark gray, black.
   const METAL_PRESETS = [
     { id: "gold", name: "Gold", light: "#fff6d8", deep: "#b8892a" },
     { id: "rose", name: "Rose gold", light: "#ffe8e2", deep: "#b57666" },
-    { id: "rainbow", name: "Rainbow", light: "#e85d5d", deep: "#5a9fe8" },
     { id: "silver", name: "Silver", light: "#f4f6f8", deep: "#7a8794" },
     { id: "dark-gray", name: "Dark gray", light: "#8a8e96", deep: "#3a3e46" },
     { id: "black", name: "Black", light: "#4a4a4e", deep: "#0a0a0c" },
   ];
+  const DEFAULT_METAL_PRESET = "silver";
 
   // Sea-glass palette. Tints are sRGB; "light" is the thin/frosted tone, "deep" the thick body.
   // Library grid (3 cols) order: green, amber, custom / pale blue, white, deep blue.
@@ -76,25 +76,77 @@
       deepRgb,
     };
   }
-  const isCustomGlassHex = (id) => typeof id === "string" && /^#[0-9a-fA-F]{6}$/.test(id);
+  const isCustomHex = (id) => typeof id === "string" && /^#[0-9a-fA-F]{6}$/.test(id);
+
+  function hexToHsv(hex) {
+    const [r, g, b] = hexToRgb(hex);
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const d = max - min;
+    let h = 0;
+    if (d !== 0) {
+      if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+      else if (max === g) h = ((b - r) / d + 2) / 6;
+      else h = ((r - g) / d + 4) / 6;
+    }
+    return { h: h * 360, s: max === 0 ? 0 : d / max, v: max };
+  }
+
+  function hsvToHex(h, s, v) {
+    const hh = ((h % 360) + 360) % 360;
+    const c = v * s;
+    const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));
+    const m = v - c;
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    if (hh < 60) [r, g, b] = [c, x, 0];
+    else if (hh < 120) [r, g, b] = [x, c, 0];
+    else if (hh < 180) [r, g, b] = [0, c, x];
+    else if (hh < 240) [r, g, b] = [0, x, c];
+    else if (hh < 300) [r, g, b] = [x, 0, c];
+    else [r, g, b] = [c, 0, x];
+    return rgbToHex(r + m, g + m, b + m);
+  }
+
   for (const c of GLASS_COLORS) {
     c.lightRgb = hexToRgb(c.light);
     c.deepRgb = hexToRgb(c.deep);
   }
   const glassColorById = (id) => {
-    if (isCustomGlassHex(id)) return tintPairFromHex(id.toLowerCase());
+    if (isCustomHex(id)) return tintPairFromHex(id.toLowerCase());
     return (
       GLASS_COLORS.find((c) => c.id === id) ||
       GLASS_COLORS.find((c) => c.id === DEFAULT_GLASS_COLOR)
     );
   };
-  const metalPresetById = (id) => METAL_PRESETS.find((c) => c.id === id) || METAL_PRESETS[0];
+  const metalPresetById = (id) => {
+    if (isCustomHex(id)) {
+      const pair = tintPairFromHex(id.toLowerCase());
+      return {
+        id: pair.id,
+        name: "Custom",
+        light: pair.light,
+        deep: pair.deep,
+      };
+    }
+    return (
+      METAL_PRESETS.find((c) => c.id === id) ||
+      METAL_PRESETS.find((c) => c.id === DEFAULT_METAL_PRESET)
+    );
+  };
   let glassColor = DEFAULT_GLASS_COLOR;
-  /** Last custom hex for the color input; strokes store the hex directly in `color`. */
+  /** Last custom hex; strokes store the hex directly in `color`. */
   let customGlassHex = "#c45a7a";
-  let metalPreset = "silver";
-  /** @type {HTMLInputElement | null} */
-  let glassColorInput = null;
+  /** Metal custom is UI-only until metal shaders land. */
+  let customMetalHex = "#c45a7a";
+  let metalPreset = DEFAULT_METAL_PRESET;
+  /** @type {HTMLElement | null} */
+  let colorPickerEl = null;
+  /** @type {null | "metal" | "glass"} */
+  let colorPickerTarget = null;
+  /** @type {{h:number,s:number,v:number}} */
+  let pickerHsv = { h: 340, s: 0.55, v: 0.77 };
 
   /** @type {Stroke[]} */
   let strokes = [];
@@ -193,38 +245,52 @@
     clearBtn.hidden = !hasContent;
   }
 
+  function closeColorPicker() {
+    colorPickerTarget = null;
+    if (colorPickerEl) colorPickerEl.hidden = true;
+  }
+
   function closeLibraries() {
-    if (openLibrary == null) return;
+    if (openLibrary == null && colorPickerTarget == null) return;
     openLibrary = null;
     metalLibrary.hidden = true;
     glassLibrary.hidden = true;
     metalChevron.setAttribute("aria-expanded", "false");
     glassChevron.setAttribute("aria-expanded", "false");
+    closeColorPicker();
   }
 
   function syncMaterialSwatches() {
     const metal = metalPresetById(metalPreset);
-    metalSwatch.dataset.preset = metal.id;
+    const metalCustomOn = isCustomHex(metalPreset);
+    metalSwatch.dataset.preset = metalCustomOn ? "custom" : metal.id;
     metalSwatch.style.setProperty("--sw-light", metal.light);
     metalSwatch.style.setProperty("--sw-deep", metal.deep);
     metalMain.title = `${metal.name} metal`;
     metalMain.setAttribute("aria-label", `${metal.name} metal`);
 
     const glass = glassColorById(glassColor);
+    const glassCustomOn = isCustomHex(glassColor);
     glassSwatch.style.setProperty("--sw-light", glass.light);
     glassSwatch.style.setProperty("--sw-deep", glass.deep);
     glassMain.title = `${glass.name} glass`;
     glassMain.setAttribute("aria-label", `${glass.name} glass`);
 
+    // Palette custom buttons stay rainbow; only the dock swatch shows the picked color.
     metalLibrary.querySelectorAll(".preset-swatch").forEach((b) => {
-      const on = b.dataset.preset === metalPreset;
+      const on =
+        b.dataset.preset === "custom"
+          ? metalCustomOn
+          : b.dataset.preset === metalPreset;
       b.classList.toggle("active", on);
       b.setAttribute("aria-selected", String(on));
     });
-    const customOn = isCustomGlassHex(glassColor);
+
     glassLibrary.querySelectorAll(".preset-swatch").forEach((b) => {
       const on =
-        b.dataset.preset === "custom" ? customOn : b.dataset.preset === glassColor;
+        b.dataset.preset === "custom"
+          ? glassCustomOn
+          : b.dataset.preset === glassColor;
       b.classList.toggle("active", on);
       b.setAttribute("aria-selected", String(on));
     });
@@ -470,13 +536,20 @@
     render();
   }
 
-  function selectMetalPreset(id) {
+  function selectMetalPreset(id, opts = {}) {
     metalPreset = id;
-    setMaterial("metal");
+    setMaterial("metal", opts);
+  }
+
+  function selectMetalCustom(hex, opts = {}) {
+    const h = hex.toLowerCase();
+    customMetalHex = h;
+    metalPreset = h;
+    setMaterial("metal", opts);
   }
 
   function selectGlassColor(id, opts = {}) {
-    if (isCustomGlassHex(id)) {
+    if (isCustomHex(id)) {
       glassColor = id.toLowerCase();
       customGlassHex = glassColor;
     } else {
@@ -485,22 +558,125 @@
     setMaterial("glass", opts);
   }
 
-  function openCustomGlassPicker() {
-    if (!glassColorInput) return;
-    glassColorInput.value = isCustomGlassHex(glassColor)
-      ? glassColor
-      : customGlassHex;
-    // Keep the library open so the color input stays in an un-hidden parent while picking.
-    selectGlassColor(glassColorInput.value, { keepLibrary: true });
-    if (typeof glassColorInput.showPicker === "function") {
-      try {
-        glassColorInput.showPicker();
-      } catch {
-        glassColorInput.click();
-      }
-    } else {
-      glassColorInput.click();
+  function syncPickerUI() {
+    if (!colorPickerEl) return;
+    const hex = hsvToHex(pickerHsv.h, pickerHsv.s, pickerHsv.v);
+    const hueHex = hsvToHex(pickerHsv.h, 1, 1);
+    const preview = colorPickerEl.querySelector(".color-picker-preview");
+    const sv = colorPickerEl.querySelector(".color-picker-sv");
+    const svKnob = colorPickerEl.querySelector(".color-picker-sv-knob");
+    const hueKnob = colorPickerEl.querySelector(".color-picker-hue-knob");
+    if (preview) preview.style.background = hex;
+    if (sv) sv.style.setProperty("--picker-hue", hueHex);
+    if (svKnob) {
+      svKnob.style.left = `${pickerHsv.s * 100}%`;
+      svKnob.style.top = `${(1 - pickerHsv.v) * 100}%`;
     }
+    if (hueKnob) {
+      hueKnob.style.left = `${(pickerHsv.h / 360) * 100}%`;
+    }
+  }
+
+  function applyPickerColor(keepLibrary = true) {
+    const hex = hsvToHex(pickerHsv.h, pickerHsv.s, pickerHsv.v);
+    if (colorPickerTarget === "glass") {
+      selectGlassColor(hex, { keepLibrary });
+    } else if (colorPickerTarget === "metal") {
+      selectMetalCustom(hex, { keepLibrary });
+    }
+    syncPickerUI();
+  }
+
+  function ensureColorPicker() {
+    if (colorPickerEl) return colorPickerEl;
+
+    const root = document.createElement("div");
+    root.className = "color-picker";
+    root.hidden = true;
+    root.setAttribute("role", "dialog");
+    root.setAttribute("aria-label", "Custom color");
+    root.innerHTML = `
+      <div class="color-picker-preview" aria-hidden="true"></div>
+      <div class="color-picker-sv" tabindex="0" role="slider" aria-label="Saturation and brightness">
+        <div class="color-picker-sv-knob" aria-hidden="true"></div>
+      </div>
+      <div class="color-picker-hue" tabindex="0" role="slider" aria-label="Hue">
+        <div class="color-picker-hue-knob" aria-hidden="true"></div>
+      </div>
+    `;
+
+    const sv = root.querySelector(".color-picker-sv");
+    const hue = root.querySelector(".color-picker-hue");
+
+    const bindPad = (el, onMove) => {
+      let dragging = false;
+      const move = (e) => {
+        if (!dragging) return;
+        const rect = el.getBoundingClientRect();
+        const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+        onMove(x, y);
+        applyPickerColor(true);
+      };
+      el.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragging = true;
+        el.setPointerCapture(e.pointerId);
+        move(e);
+      });
+      el.addEventListener("pointermove", move);
+      el.addEventListener("pointerup", (e) => {
+        if (!dragging) return;
+        dragging = false;
+        try {
+          el.releasePointerCapture(e.pointerId);
+        } catch {
+          /* already released */
+        }
+      });
+      el.addEventListener("pointercancel", () => {
+        dragging = false;
+      });
+    };
+
+    bindPad(sv, (x, y) => {
+      pickerHsv.s = x;
+      pickerHsv.v = 1 - y;
+    });
+    bindPad(hue, (x) => {
+      pickerHsv.h = x * 360;
+    });
+
+    colorPickerEl = root;
+    return root;
+  }
+
+  function openCustomColorPicker(which) {
+    const host = which === "metal" ? metalSplit : glassSplit;
+    const picker = ensureColorPicker();
+    if (picker.parentElement !== host) host.appendChild(picker);
+
+    // Keep the matching library open under the picker.
+    openLibrary = which;
+    const isMetal = which === "metal";
+    metalLibrary.hidden = !isMetal;
+    glassLibrary.hidden = isMetal;
+    metalChevron.setAttribute("aria-expanded", String(isMetal));
+    glassChevron.setAttribute("aria-expanded", String(!isMetal));
+
+    const hex =
+      which === "glass"
+        ? isCustomHex(glassColor)
+          ? glassColor
+          : customGlassHex
+        : isCustomHex(metalPreset)
+          ? metalPreset
+          : customMetalHex;
+    pickerHsv = hexToHsv(hex);
+    colorPickerTarget = which;
+    picker.hidden = false;
+    applyPickerColor(true);
   }
 
   function toggleLibrary(which) {
@@ -508,6 +684,7 @@
       closeLibraries();
       return;
     }
+    closeColorPicker();
     openLibrary = which;
     const isMetal = which === "metal";
     metalLibrary.hidden = !isMetal;
@@ -517,9 +694,27 @@
     syncMaterialSwatches();
   }
 
+  function makeCustomSwatchButton(which) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className =
+      which === "metal" ? "preset-swatch metal custom" : "preset-swatch custom";
+    b.dataset.preset = "custom";
+    b.title = "Custom";
+    b.setAttribute("aria-label", "Custom color");
+    b.setAttribute("role", "option");
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openCustomColorPicker(which);
+    });
+    return b;
+  }
+
   function buildLibraries() {
     metalLibrary.textContent = "";
-    for (const c of METAL_PRESETS) {
+
+    const appendMetalPreset = (c) => {
+      if (!c) return;
       const b = document.createElement("button");
       b.type = "button";
       b.className = "preset-swatch metal";
@@ -531,11 +726,20 @@
       b.style.setProperty("--sw-deep", c.deep);
       b.addEventListener("click", () => selectMetalPreset(c.id));
       metalLibrary.appendChild(b);
-    }
+    };
+
+    // Top row: gold, rose, custom — bottom: silver, dark gray, black
+    appendMetalPreset(METAL_PRESETS.find((c) => c.id === "gold"));
+    appendMetalPreset(METAL_PRESETS.find((c) => c.id === "rose"));
+    metalLibrary.appendChild(makeCustomSwatchButton("metal"));
+    appendMetalPreset(METAL_PRESETS.find((c) => c.id === "silver"));
+    appendMetalPreset(METAL_PRESETS.find((c) => c.id === "dark-gray"));
+    appendMetalPreset(METAL_PRESETS.find((c) => c.id === "black"));
 
     glassLibrary.textContent = "";
 
     const appendGlassPreset = (c) => {
+      if (!c) return;
       const b = document.createElement("button");
       b.type = "button";
       b.className = "preset-swatch";
@@ -549,36 +753,13 @@
       glassLibrary.appendChild(b);
     };
 
-    // Top row: green, brown, rainbow — bottom: pale blue, white, deep blue
+    // Top row: green, amber, custom — bottom: pale blue, white, deep blue
     appendGlassPreset(GLASS_COLORS.find((c) => c.id === "deep-green"));
     appendGlassPreset(GLASS_COLORS.find((c) => c.id === "amber"));
-
-    const customBtn = document.createElement("button");
-    customBtn.type = "button";
-    customBtn.className = "preset-swatch custom";
-    customBtn.dataset.preset = "custom";
-    customBtn.title = "Custom";
-    customBtn.setAttribute("aria-label", "Custom color");
-    customBtn.setAttribute("role", "option");
-    customBtn.addEventListener("click", () => openCustomGlassPicker());
-    glassLibrary.appendChild(customBtn);
-
+    glassLibrary.appendChild(makeCustomSwatchButton("glass"));
     appendGlassPreset(GLASS_COLORS.find((c) => c.id === "pale-blue"));
     appendGlassPreset(GLASS_COLORS.find((c) => c.id === "white"));
     appendGlassPreset(GLASS_COLORS.find((c) => c.id === "deep-blue"));
-
-    glassColorInput = document.createElement("input");
-    glassColorInput.type = "color";
-    glassColorInput.value = customGlassHex;
-    glassColorInput.className = "glass-color-input";
-    glassColorInput.setAttribute("aria-label", "Pick glass color");
-    glassColorInput.addEventListener("input", () => {
-      selectGlassColor(glassColorInput.value, { keepLibrary: true });
-    });
-    glassColorInput.addEventListener("change", () => {
-      selectGlassColor(glassColorInput.value);
-    });
-    glassLibrary.appendChild(glassColorInput);
 
     syncDock();
   }
@@ -1873,7 +2054,7 @@
   });
 
   document.addEventListener("pointerdown", (e) => {
-    if (openLibrary == null) return;
+    if (openLibrary == null && colorPickerTarget == null) return;
     if (dock.contains(e.target)) return;
     closeLibraries();
   });
@@ -1921,7 +2102,7 @@
       if (key === "e") setTool("erase");
       if (key === "g") setMaterial("glass");
       if (key === "escape") {
-        if (openLibrary != null) {
+        if (openLibrary != null || colorPickerTarget != null) {
           closeLibraries();
           return;
         }
