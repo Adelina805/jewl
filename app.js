@@ -39,25 +39,53 @@
 
   // Sea-glass palette. Tints are sRGB; "light" is the thin/frosted tone, "deep" the thick body.
   const GLASS_COLORS = [
-    { id: "seafoam", name: "Seafoam", light: "#c8ecdc", deep: "#5fb89c" },
-    { id: "teal", name: "Teal", light: "#8fd0cc", deep: "#2a7f86" },
-    { id: "cobalt", name: "Cobalt", light: "#8fb4e6", deep: "#2b4fa0" },
-    { id: "amber", name: "Amber", light: "#f0d08a", deep: "#b8741c" },
-    { id: "frost", name: "Frosted white", light: "#f4f8f8", deep: "#b7c9cc" },
+    { id: "pale-blue", name: "Pale blue", light: "#d2ebf5", deep: "#6ea8c4" },
+    { id: "white", name: "White", light: "#f6f8f8", deep: "#c2ced2" },
+    { id: "deep-green", name: "Deep green", light: "#7ec48c", deep: "#1f6b3c" },
+    { id: "deep-blue", name: "Deep blue", light: "#6a8fd4", deep: "#1e3f8f" },
+    { id: "amber", name: "Amber", light: "#e8c078", deep: "#8b5218" },
   ];
   const hexToRgb = (h) => [
     parseInt(h.slice(1, 3), 16) / 255,
     parseInt(h.slice(3, 5), 16) / 255,
     parseInt(h.slice(5, 7), 16) / 255,
   ];
+  const rgbToHex = (r, g, b) => {
+    const to = (x) =>
+      Math.max(0, Math.min(255, Math.round(x * 255)))
+        .toString(16)
+        .padStart(2, "0");
+    return `#${to(r)}${to(g)}${to(b)}`;
+  };
+  /** Derive frosted light/deep pair from a single picked hex (deep ≈ color, light toward white). */
+  function tintPairFromHex(hex) {
+    const deepRgb = hexToRgb(hex);
+    const lightRgb = deepRgb.map((c) => c + (1 - c) * 0.58);
+    return {
+      id: hex,
+      name: "Custom",
+      light: rgbToHex(lightRgb[0], lightRgb[1], lightRgb[2]),
+      deep: hex,
+      lightRgb,
+      deepRgb,
+    };
+  }
+  const isCustomGlassHex = (id) => typeof id === "string" && /^#[0-9a-fA-F]{6}$/.test(id);
   for (const c of GLASS_COLORS) {
     c.lightRgb = hexToRgb(c.light);
     c.deepRgb = hexToRgb(c.deep);
   }
-  const glassColorById = (id) => GLASS_COLORS.find((c) => c.id === id) || GLASS_COLORS[1];
+  const glassColorById = (id) => {
+    if (isCustomGlassHex(id)) return tintPairFromHex(id.toLowerCase());
+    return GLASS_COLORS.find((c) => c.id === id) || GLASS_COLORS[0];
+  };
   const metalPresetById = (id) => METAL_PRESETS.find((c) => c.id === id) || METAL_PRESETS[0];
-  let glassColor = "teal";
+  let glassColor = "pale-blue";
+  /** Last custom hex for the color input; strokes store the hex directly in `color`. */
+  let customGlassHex = "#c45a7a";
   let metalPreset = "silver";
+  /** @type {HTMLInputElement | null} */
+  let glassColorInput = null;
 
   /** @type {Stroke[]} */
   let strokes = [];
@@ -184,8 +212,10 @@
       b.classList.toggle("active", on);
       b.setAttribute("aria-selected", String(on));
     });
+    const customOn = isCustomGlassHex(glassColor);
     glassLibrary.querySelectorAll(".preset-swatch").forEach((b) => {
-      const on = b.dataset.preset === glassColor;
+      const on =
+        b.dataset.preset === "custom" ? customOn : b.dataset.preset === glassColor;
       b.classList.toggle("active", on);
       b.setAttribute("aria-selected", String(on));
     });
@@ -436,9 +466,32 @@
     setMaterial("metal");
   }
 
-  function selectGlassColor(id) {
-    glassColor = id;
-    setMaterial("glass");
+  function selectGlassColor(id, opts = {}) {
+    if (isCustomGlassHex(id)) {
+      glassColor = id.toLowerCase();
+      customGlassHex = glassColor;
+    } else {
+      glassColor = id;
+    }
+    setMaterial("glass", opts);
+  }
+
+  function openCustomGlassPicker() {
+    if (!glassColorInput) return;
+    glassColorInput.value = isCustomGlassHex(glassColor)
+      ? glassColor
+      : customGlassHex;
+    // Keep the library open so the color input stays in an un-hidden parent while picking.
+    selectGlassColor(glassColorInput.value, { keepLibrary: true });
+    if (typeof glassColorInput.showPicker === "function") {
+      try {
+        glassColorInput.showPicker();
+      } catch {
+        glassColorInput.click();
+      }
+    } else {
+      glassColorInput.click();
+    }
   }
 
   function toggleLibrary(which) {
@@ -485,6 +538,29 @@
       b.addEventListener("click", () => selectGlassColor(c.id));
       glassLibrary.appendChild(b);
     }
+
+    const customBtn = document.createElement("button");
+    customBtn.type = "button";
+    customBtn.className = "preset-swatch custom";
+    customBtn.dataset.preset = "custom";
+    customBtn.title = "Custom";
+    customBtn.setAttribute("aria-label", "Custom color");
+    customBtn.setAttribute("role", "option");
+    customBtn.addEventListener("click", () => openCustomGlassPicker());
+    glassLibrary.appendChild(customBtn);
+
+    glassColorInput = document.createElement("input");
+    glassColorInput.type = "color";
+    glassColorInput.value = customGlassHex;
+    glassColorInput.className = "glass-color-input";
+    glassColorInput.setAttribute("aria-label", "Pick glass color");
+    glassColorInput.addEventListener("input", () => {
+      selectGlassColor(glassColorInput.value, { keepLibrary: true });
+    });
+    glassColorInput.addEventListener("change", () => {
+      selectGlassColor(glassColorInput.value);
+    });
+    glassLibrary.appendChild(glassColorInput);
 
     syncDock();
   }
