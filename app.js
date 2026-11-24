@@ -30,7 +30,7 @@
   /** @typedef {{x:number,y:number}} Pt */
   /** @typedef {{id:number, kind: "silver"|"glass", color: string, points: Pt[], width: number}} Stroke */
 
-  // Placeholder metal presets. All still render as sterling until metal shaders land.
+  // Metal palette. Tints shade the chrome (light = highlight, deep = recess).
   // Library grid (3 cols) order: gold, rose gold, custom / silver, dark gray, black.
   const METAL_PRESETS = [
     { id: "gold", name: "Gold", light: "#fff6d8", deep: "#b8892a" },
@@ -113,6 +113,10 @@
     c.lightRgb = hexToRgb(c.light);
     c.deepRgb = hexToRgb(c.deep);
   }
+  for (const c of METAL_PRESETS) {
+    c.lightRgb = hexToRgb(c.light);
+    c.deepRgb = hexToRgb(c.deep);
+  }
   const glassColorById = (id) => {
     if (isCustomHex(id)) return tintPairFromHex(id.toLowerCase());
     return (
@@ -128,6 +132,8 @@
         name: "Custom",
         light: pair.light,
         deep: pair.deep,
+        lightRgb: pair.lightRgb,
+        deepRgb: pair.deepRgb,
       };
     }
     return (
@@ -138,7 +144,7 @@
   let glassColor = DEFAULT_GLASS_COLOR;
   /** Last custom hex; strokes store the hex directly in `color`. */
   let customGlassHex = "#c45a7a";
-  /** Metal custom is UI-only until metal shaders land. */
+  /** Last custom metal hex; strokes store the hex (or preset id) in `color`. */
   let customMetalHex = "#c45a7a";
   let metalPreset = DEFAULT_METAL_PRESET;
   /** @type {HTMLElement | null} */
@@ -1393,14 +1399,11 @@
     return w < 10 ? 0 : w < 20 ? 1 : 2;
   }
 
-  function buildMetal(quality) {
-    const list = strokesOfKind("silver");
-    if (list.length === 0) {
-      metal.builtQuality = quality;
-      emptyMetal();
-      return;
-    }
-
+  /**
+   * CPU shade one same-color metal group into metal.canvas.
+   * Returns false when the group has no drawable extent.
+   */
+  function buildMetalGroup(list, col, quality) {
     // --- Extents + weight statistics
     let minX = Infinity;
     let minY = Infinity;
@@ -1428,11 +1431,7 @@
     const y0 = Math.floor(Math.max(minY - margin, -300));
     const x1 = Math.ceil(Math.min(maxX + margin, width + 300));
     const y1 = Math.ceil(Math.min(maxY + margin, height + 300));
-    if (x1 - x0 < 2 || y1 - y0 < 2) {
-      metal.builtQuality = quality;
-      emptyMetal();
-      return;
-    }
+    if (x1 - x0 < 2 || y1 - y0 < 2) return false;
 
     // s = bitmap pixels per CSS pixel. Match the screen's device pixel ratio so
     // the silver is drawn 1:1 with the display; only drop resolution when the
@@ -1535,7 +1534,7 @@
     const sx2 = Math.round(0.3 * shScale * s);
     const sy2 = Math.max(1, Math.round(0.9 * shScale * s));
 
-    // --- 6. Shade: normals from the height map, reflect the studio
+    // --- 6. Shade: normals from the height map, reflect the studio (metal-tinted)
     if (metal.canvas.width !== gw || metal.canvas.height !== gh) {
       metal.canvas.width = gw;
       metal.canvas.height = gh;
@@ -1545,6 +1544,12 @@
     const SH_R = 28;
     const SH_G = 36;
     const SH_B = 44;
+    const loR = col.deepRgb[0] * 0.15 * 255;
+    const loG = col.deepRgb[1] * 0.15 * 255;
+    const loB = col.deepRgb[2] * 0.15 * 255;
+    const hiR = col.lightRgb[0] * 255;
+    const hiG = col.lightRgb[1] * 255;
+    const hiB = col.lightRgb[2] * 255;
 
     for (let y = 0; y < gh; y++) {
       for (let x = 0; x < gw; x++) {
@@ -1576,9 +1581,9 @@
           const ny = -gy * nz;
           const v = envLum(2 * nz * nx, 2 * nz * ny, 2 * nz * nz - 1);
 
-          const cr = Math.min(255, 18 + 238 * v);
-          const cg = Math.min(255, 21 + 239 * v);
-          const cb = Math.min(255, 28 + 240 * v);
+          const cr = Math.min(255, loR + hiR * v);
+          const cg = Math.min(255, loG + hiG * v);
+          const cb = Math.min(255, loB + hiB * v);
 
           alpha = c + aS * (1 - c);
           const k = aS * (1 - c);
@@ -1600,7 +1605,46 @@
     metal.y = y0;
     metal.w = gw / s;
     metal.h = gh / s;
-    metal.empty = false;
+    return true;
+  }
+
+  function buildMetal(quality) {
+    const list = strokesOfKind("silver");
+    if (list.length === 0) {
+      metal.builtQuality = quality;
+      emptyMetal();
+      return;
+    }
+
+    const groups = new Map();
+    for (const s of list) {
+      if (!groups.has(s.color)) groups.set(s.color, []);
+      groups.get(s.color).push(s);
+    }
+
+    const c = metalLayerCtx;
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.clearRect(0, 0, metal.layer.width, metal.layer.height);
+    c.imageSmoothingEnabled = true;
+    metal.empty = true;
+
+    for (const [colorId, group] of groups) {
+      const col = metalPresetById(colorId);
+      if (!buildMetalGroup(group, col, quality)) continue;
+      c.drawImage(
+        metal.canvas,
+        0,
+        0,
+        metal.canvas.width,
+        metal.canvas.height,
+        metal.x * dpr,
+        metal.y * dpr,
+        metal.w * dpr,
+        metal.h * dpr
+      );
+      metal.empty = false;
+    }
+
     metal.builtVersion = metal.version;
     metal.builtQuality = quality;
   }
@@ -1623,24 +1667,51 @@
           glassGL && !glassLayer.empty && glassLayer.hasDist
             ? { color: glassLayer.canvas, dist: glassLayer.dist, version: glassLayer.builtVersion }
             : null;
-        const molded = [];
-        const onTop = [];
-        for (const s of list) (glass && isOnTop(s) ? onTop : molded).push(s);
+
+        // Group by metal color (same-color strokes fuse; different colors composite)
+        const groups = new Map();
+        for (const s of list) {
+          if (!groups.has(s.color)) groups.set(s.color, []);
+          groups.get(s.color).push(s);
+        }
 
         const c = metalLayerCtx;
         c.setTransform(1, 0, 0, 1, 0, 0);
         c.clearRect(0, 0, metal.layer.width, metal.layer.height);
         c.imageSmoothingEnabled = false; // 1:1 device pixels
         metal.glEmpty = true;
-        for (const [group, g] of [
-          [molded, glass],
-          [onTop, null],
-        ]) {
-          if (group.length === 0) continue;
-          const r = silverGL.render(group, { ...SILVER, maxArea, glass: g, wrap: WRAP });
-          if (!r) continue;
-          c.drawImage(silverGL.canvas, r.sx, r.sy, r.sw, r.sh, r.x * dpr, r.y * dpr, r.w * dpr, r.h * dpr);
-          metal.glEmpty = false;
+        for (const [colorId, colorGroup] of groups) {
+          const col = metalPresetById(colorId);
+          const molded = [];
+          const onTop = [];
+          for (const s of colorGroup) (glass && isOnTop(s) ? onTop : molded).push(s);
+          for (const [group, g] of [
+            [molded, glass],
+            [onTop, null],
+          ]) {
+            if (group.length === 0) continue;
+            const r = silverGL.render(group, {
+              ...SILVER,
+              maxArea,
+              glass: g,
+              wrap: WRAP,
+              tintLight: col.lightRgb,
+              tintDeep: col.deepRgb,
+            });
+            if (!r) continue;
+            c.drawImage(
+              silverGL.canvas,
+              r.sx,
+              r.sy,
+              r.sw,
+              r.sh,
+              r.x * dpr,
+              r.y * dpr,
+              r.w * dpr,
+              r.h * dpr
+            );
+            metal.glEmpty = false;
+          }
         }
       } catch (err) {
         disableGL(err);
@@ -1713,9 +1784,8 @@
     if (stale) buildMetal(quality);
     if (metal.empty) return;
     ctx.save();
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(metal.canvas, metal.x, metal.y, metal.w, metal.h);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(metal.layer, 0, 0);
     ctx.restore();
   }
 
@@ -1920,7 +1990,7 @@
     activeStroke = {
       id: nextStrokeId++,
       kind: material === "glass" ? "glass" : "silver",
-      color: glassColor,
+      color: material === "glass" ? glassColor : metalPreset,
       points: [p],
       width: thickness,
     };

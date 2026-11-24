@@ -13,7 +13,7 @@
  *      in the surface, and a soft shadow.
  *
  * The same pipeline renders two materials, chosen with create(material):
- *   "silver" - chrome reflecting a studio environment (default)
+ *   "silver" - chrome reflecting a studio environment; tinted via opts.tintLight / opts.tintDeep
  *   "glass"  - frosted, translucent, tinted sea glass (opts.tintLight / opts.tintDeep)
  *
  * Exposes window.SilverGL.create(material); returns null when WebGL2 + float render
@@ -439,6 +439,8 @@ uniform float uBevel;       // slope of the narrow bevel where metal meets glass
 uniform float uBevW;        // CSS px
 uniform float uFlatG;       // how much of the glass's frosted edge is hidden next to metal
 uniform float uFlatW;       // CSS px
+uniform vec3 uMetalLight;   // chrome highlight tint
+uniform vec3 uMetalDeep;    // chrome recess tint
 ${GLASS_FIELD_GLSL}
 
 float thrAt(vec2 f) { return uThr; }
@@ -502,7 +504,8 @@ void outsideShade(inout vec3 rgb, inout float alpha, float aS, float se, float c
   // weighted by (1 - c); the opaque chrome fills the rest.
   const SILVER_SHADE = `
     float v = envLum(vec3(2.0 * nz * nx, 2.0 * nz * ny, 2.0 * nz * nz - 1.0));
-    vec3 chrome = min(vec3(18.0, 21.0, 28.0) / 255.0 + vec3(238.0, 239.0, 240.0) / 255.0 * v, vec3(1.0));
+    // Deep recess + bright highlight, same HDR shape as sterling but metal-tinted
+    vec3 chrome = min(uMetalDeep * 0.15 + uMetalLight * v, vec3(1.0));
     chrome = wrapChrome(chrome, se, css, ng);
     rgb = chrome * c + rgb;
     alpha = c + alpha;
@@ -1316,6 +1319,11 @@ void main() {
         gl.uniform1f(fp.u("uBevW"), Math.min(3, Math.max(1.2, 0.12 * meanW)));
         gl.uniform1f(fp.u("uFlatG"), knob("flattenGlass", 0.9));
         gl.uniform1f(fp.u("uFlatW"), knob("flattenWidth", 10));
+        // Metal tint (defaults match sterling silver)
+        const ml = opts.tintLight || [0.957, 0.965, 0.973];
+        const md = opts.tintDeep || [0.478, 0.529, 0.58];
+        gl.uniform3f(fp.u("uMetalLight"), ml[0], ml[1], ml[2]);
+        gl.uniform3f(fp.u("uMetalDeep"), md[0], md[1], md[2]);
       }
       fullscreen();
 
