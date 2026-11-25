@@ -90,6 +90,12 @@ body::after {
   animation: settle 700ms ease-out 80ms both;
 }
 
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
 .brand h1 {
   margin: 0;
   font-family: "Fraunces", serif;
@@ -99,6 +105,35 @@ body::after {
   letter-spacing: -0.03em;
   line-height: 1;
   color: var(--ink);
+}
+
+.brand-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-soft);
+  opacity: 0.72;
+  transition: color 160ms ease, opacity 160ms ease;
+}
+
+.brand-download svg {
+  display: block;
+}
+
+.brand-download:hover {
+  color: var(--ink);
+  opacity: 1;
+}
+
+.brand-download:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .actions {
