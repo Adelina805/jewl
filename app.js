@@ -5,6 +5,12 @@
   const ctx = canvas.getContext("2d", { alpha: false });
   const stage = document.querySelector(".stage");
   const thicknessInput = document.getElementById("thickness");
+  const thicknessValue = document.getElementById("thickness-value");
+  const sizeBtn = document.getElementById("size-btn");
+  const sizeBtnDot = document.getElementById("size-btn-dot");
+  const sizeBtnLabel = document.getElementById("size-btn-label");
+  const sizePanel = document.getElementById("size-panel");
+  const sizePresetsEl = document.getElementById("size-presets");
   const undoBtn = document.getElementById("undo");
   const redoBtn = document.getElementById("redo");
   const deleteBtn = document.getElementById("delete");
@@ -26,6 +32,12 @@
   const metalSwatch = document.getElementById("metal-swatch");
   const glassSwatch = document.getElementById("glass-swatch");
   const eraseCursorEl = document.getElementById("erase-cursor");
+
+  const SIZE_MIN = 4;
+  const SIZE_MAX = 100;
+  /** Dot diameters (CSS) for the four presets, small → large. */
+  const SIZE_PRESET_DOTS = ["0.28rem", "0.42rem", "0.58rem", "0.78rem"];
+  const SIZE_PRESETS = [5, 10, 20, 40];
 
   /** @typedef {{x:number,y:number}} Pt */
   /** @typedef {{id:number, kind: "silver"|"glass", color: string, points: Pt[], width: number}} Stroke */
@@ -173,9 +185,11 @@
   let tool = "draw";
   /** @type {"metal"|"glass"} */
   let material = "metal";
-  /** @type {null | "metal" | "glass"} */
+  /** @type {null | "metal" | "glass" | "size"} */
   let openLibrary = null;
-  let thickness = Number(thicknessInput.value);
+  /** Remembered brush sizes for metal draw, glass draw, and eraser. */
+  let sizes = { metal: 20, glass: 20, eraser: 20 };
+  let thickness = Number(thicknessInput.value) || 20;
   let dpr = 1;
   let width = 0;
   let height = 0;
@@ -263,7 +277,63 @@
     glassLibrary.hidden = true;
     metalChevron.setAttribute("aria-expanded", "false");
     glassChevron.setAttribute("aria-expanded", "false");
+    sizePanel.hidden = true;
+    sizeBtn.setAttribute("aria-expanded", "false");
     closeColorPicker();
+  }
+
+  function sizeActiveKey() {
+    return tool === "erase" ? "eraser" : material;
+  }
+
+  function clampSize(n) {
+    return Math.min(SIZE_MAX, Math.max(SIZE_MIN, Math.round(n)));
+  }
+
+  /** Map brush size to the dock preview-dot diameter (CSS rem). */
+  function sizeDotRem(n) {
+    const t = (clampSize(n) - SIZE_MIN) / (SIZE_MAX - SIZE_MIN);
+    return `${(0.22 + t * 0.5).toFixed(3)}rem`;
+  }
+
+  function syncSizeUi() {
+    thicknessInput.value = String(thickness);
+    thicknessInput.setAttribute("aria-valuenow", String(thickness));
+    sizeBtnDot.style.setProperty("--size-dot", sizeDotRem(thickness));
+    sizeBtnLabel.textContent = String(thickness);
+    sizeBtn.title = `Size ${thickness}`;
+    sizeBtn.setAttribute("aria-label", `Size ${thickness}`);
+    if (document.activeElement !== thicknessValue) {
+      thicknessValue.value = String(thickness);
+    }
+    sizePresetsEl.querySelectorAll(".size-preset").forEach((b) => {
+      const on = Number(b.dataset.size) === thickness;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-selected", String(on));
+    });
+  }
+
+  function setThickness(next) {
+    thickness = clampSize(next);
+    sizes[sizeActiveKey()] = thickness;
+    syncSizeUi();
+    if (tool === "erase") syncEraseCursor();
+  }
+
+  function applySizeFromContext() {
+    thickness = sizes[sizeActiveKey()];
+    syncSizeUi();
+    if (tool === "erase") syncEraseCursor();
+  }
+
+  function commitThicknessValue() {
+    const raw = thicknessValue.value.trim();
+    const n = Number(raw);
+    if (!Number.isFinite(n) || raw === "") {
+      thicknessValue.value = String(thickness);
+      return;
+    }
+    setThickness(n);
   }
 
   function syncMaterialSwatches() {
@@ -520,7 +590,7 @@
     }
     if (next !== "select") stage.classList.remove("dragging");
     if (next !== "erase") eraseCursor = null;
-    syncEraseCursor();
+    applySizeFromContext();
     syncDock();
     syncChrome();
     render();
@@ -535,7 +605,7 @@
       stage.classList.remove("over-object");
     }
     if (tool !== "erase") eraseCursor = null;
-    syncEraseCursor();
+    applySizeFromContext();
     if (!opts.keepLibrary) closeLibraries();
     syncDock();
     syncChrome();
@@ -663,13 +733,15 @@
     const picker = ensureColorPicker();
     if (picker.parentElement !== host) host.appendChild(picker);
 
-    // Keep the matching library open under the picker.
+    // Keep the matching library open under the picker; close Size.
     openLibrary = which;
     const isMetal = which === "metal";
     metalLibrary.hidden = !isMetal;
     glassLibrary.hidden = isMetal;
     metalChevron.setAttribute("aria-expanded", String(isMetal));
     glassChevron.setAttribute("aria-expanded", String(!isMetal));
+    sizePanel.hidden = true;
+    sizeBtn.setAttribute("aria-expanded", "false");
 
     const hex =
       which === "glass"
@@ -697,7 +769,44 @@
     glassLibrary.hidden = isMetal;
     metalChevron.setAttribute("aria-expanded", String(isMetal));
     glassChevron.setAttribute("aria-expanded", String(!isMetal));
+    sizePanel.hidden = true;
+    sizeBtn.setAttribute("aria-expanded", "false");
     syncMaterialSwatches();
+  }
+
+  function toggleSizePanel() {
+    if (openLibrary === "size") {
+      closeLibraries();
+      return;
+    }
+    closeColorPicker();
+    openLibrary = "size";
+    metalLibrary.hidden = true;
+    glassLibrary.hidden = true;
+    metalChevron.setAttribute("aria-expanded", "false");
+    glassChevron.setAttribute("aria-expanded", "false");
+    sizePanel.hidden = false;
+    sizeBtn.setAttribute("aria-expanded", "true");
+    syncSizeUi();
+  }
+
+  function buildSizePresets() {
+    sizePresetsEl.replaceChildren();
+    SIZE_PRESETS.forEach((size, i) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "size-preset";
+      b.dataset.size = String(size);
+      b.style.setProperty("--dot", SIZE_PRESET_DOTS[i]);
+      b.title = `Size ${size}`;
+      b.setAttribute("aria-label", `Size ${size}`);
+      b.setAttribute("role", "option");
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setThickness(size);
+      });
+      sizePresetsEl.appendChild(b);
+    });
   }
 
   function makeCustomSwatchButton(which) {
@@ -2097,9 +2206,26 @@
   canvas.addEventListener("pointerleave", onPointerLeave);
 
   thicknessInput.addEventListener("input", () => {
-    thickness = Number(thicknessInput.value);
-    if (tool === "erase") syncEraseCursor();
+    setThickness(Number(thicknessInput.value));
   });
+
+  thicknessValue.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitThicknessValue();
+      thicknessValue.blur();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      thicknessValue.value = String(thickness);
+      thicknessValue.blur();
+      closeLibraries();
+    }
+  });
+  thicknessValue.addEventListener("blur", () => {
+    commitThicknessValue();
+  });
+  thicknessValue.addEventListener("pointerdown", (e) => e.stopPropagation());
 
   undoBtn.addEventListener("click", undo);
   redoBtn.addEventListener("click", redo);
@@ -2122,6 +2248,11 @@
     e.stopPropagation();
     toggleLibrary("glass");
   });
+  sizeBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleSizePanel();
+  });
+  sizePanel.addEventListener("pointerdown", (e) => e.stopPropagation());
 
   document.addEventListener("pointerdown", (e) => {
     if (openLibrary == null && colorPickerTarget == null) return;
@@ -2132,6 +2263,21 @@
   window.addEventListener("keydown", (e) => {
     const meta = e.metaKey || e.ctrlKey;
     const key = e.key.toLowerCase();
+    const typing =
+      e.target instanceof HTMLInputElement ||
+      e.target instanceof HTMLTextAreaElement ||
+      (e.target instanceof HTMLElement && e.target.isContentEditable);
+
+    // Exact size field (and any future inputs): don't steal keys for tool shortcuts.
+    if (typing) {
+      if (!meta && !e.altKey && key === "escape") {
+        if (openLibrary != null || colorPickerTarget != null) {
+          e.preventDefault();
+          closeLibraries();
+        }
+      }
+      return;
+    }
 
     if (meta && key === "z") {
       e.preventDefault();
@@ -2186,6 +2332,11 @@
   window.addEventListener("resize", resize);
 
   buildLibraries();
+  buildSizePresets();
+  sizes.metal = thickness;
+  sizes.glass = thickness;
+  sizes.eraser = thickness;
+  syncSizeUi();
   stage.dataset.tool = tool;
   syncDock();
   syncChrome();
